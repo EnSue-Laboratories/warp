@@ -43,8 +43,7 @@ warp-oss control tab new
 warp-oss control tab close <id>
 
 warp-oss control pane list [--tab <id>]
-warp-oss control pane send  <id> "<command>"          # adds trailing \n by default
-warp-oss control pane send  <id> --no-newline "<text>"
+warp-oss control pane send  <id> "<command>"            # executes as a block
 warp-oss control pane read  [--pane <id>] [--blocks N]   # default N=10
 warp-oss control pane split [--pane <id>] --direction <left|right|up|down>
 

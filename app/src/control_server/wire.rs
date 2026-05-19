@@ -11,7 +11,7 @@ pub enum Request {
     Ping,
     ListTabs,
     ListPanes { tab: Option<u64> },
-    SendInput { pane: Option<u64>, text: String, newline: bool },
+    SendInput { pane: Option<u64>, text: String },
     ReadPane { pane: Option<u64>, blocks: usize },
     NewTab,
     CloseTab { tab: u64 },

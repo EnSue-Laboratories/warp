@@ -101,12 +101,9 @@ pub struct SendInputArgs {
     /// Pane id (as returned by `pane list`).
     pub pane: String,
 
-    /// The command text to send. A trailing newline is appended by default.
+    /// The command text to send. The command is executed as a whole block
+    /// (Warp's command-block model), so a trailing newline is implicit.
     pub command: String,
-
-    /// Suppress the trailing newline (send the bytes verbatim).
-    #[arg(long)]
-    pub no_newline: bool,
 }
 
 #[derive(Debug, Clone, Args)]

@@ -148,11 +148,7 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::Ping => Response::Pong,
         Request::ListTabs => handle_list_tabs(ctx),
         Request::ListPanes { tab } => handle_list_panes(tab, ctx),
-        Request::SendInput {
-            pane,
-            text,
-            newline,
-        } => handle_send_input(pane, text, newline, ctx),
+        Request::SendInput { pane, text } => handle_send_input(pane, text, ctx),
         Request::ReadPane { pane, blocks } => handle_read_pane(pane, blocks, ctx),
         Request::NewTab => handle_new_tab(ctx),
         Request::CloseTab { tab } => handle_close_tab(tab, ctx),
@@ -308,12 +304,7 @@ fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response 
     Response::Panes { panes }
 }
 
-fn handle_send_input(
-    pane: Option<u64>,
-    text: String,
-    _newline: bool,
-    ctx: &mut AppContext,
-) -> Response {
+fn handle_send_input(pane: Option<u64>, text: String, ctx: &mut AppContext) -> Response {
     let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
         Some(p) => p,
         None => {

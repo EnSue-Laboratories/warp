@@ -55,15 +55,12 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
                 None => None,
             },
         },
-        ControlCommand::Pane(PaneCommand::Send(SendInputArgs {
-            pane,
-            command,
-            no_newline,
-        })) => Request::SendInput {
-            pane: Some(parse_u64(&pane, "pane")?),
-            text: command,
-            newline: !no_newline,
-        },
+        ControlCommand::Pane(PaneCommand::Send(SendInputArgs { pane, command })) => {
+            Request::SendInput {
+                pane: Some(parse_u64(&pane, "pane")?),
+                text: command,
+            }
+        }
         ControlCommand::Pane(PaneCommand::Read(PaneReadArgs { pane, blocks })) => {
             Request::ReadPane {
                 pane: match pane {
