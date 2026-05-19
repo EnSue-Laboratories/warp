@@ -6,13 +6,40 @@ Notes for Claude Code sessions. For general engineering guidance see `WARP.md`.
 
 This fork is being shaped for **the maintainer's personal use of Warp**, not for upstream contribution. Bias toward customizations, integrations, and ergonomic tweaks for one user. Don't worry about preserving features that don't matter to them; do worry about not breaking what they actually use day-to-day.
 
-## Candidate directions under consideration
+## Shipped: `warp-oss control …` (branch `feat/control-cli`)
 
-### Warp-as-CLI (and a thin MCP wrapper on top)
+A shell-invokable CLI that **controls the running Warp instance** over a local Unix-domain socket. Outside processes (other shells, scripts, AI agents, Raycast) drive Warp through it. This is the inversion of Warp's existing MCP support (`app/src/ai/mcp/parsing.rs`), which only lets Warp's own agent *consume* MCP servers. It's a terminal-automation surface, not an AI feature, so BYOK / `SoloUserByok` gating does **not** apply.
 
-Goal: expose a shell-invokable `warp <subcommand>` CLI that **controls a running Warp app instance** — list sessions, send commands, read block output, tail streams, open panes, etc. Anything outside Warp (shell scripts, other AI agents via an MCP shim, cron, raycast scripts) can drive Warp through this surface.
+There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that documents the day-to-day usage; load it whenever you (Claude) want to interact with a running Warp instance.
 
-This is the inversion of Warp's existing MCP support (`app/src/ai/mcp/parsing.rs`), which only lets Warp's own agent *consume* external MCP servers. It's a *terminal automation* surface, not an AI feature, so the BYOK / `SoloUserByok` server gating does **not** apply — no Warp backend involvement needed.
+### What's wired today
+
+| Subcommand | Status |
+|---|---|
+| `tab list` / `tab new` / `tab close <id>` | ✅ |
+| `pane list [--tab <id>]` / `pane send <id> "<cmd>"` / `pane read [--pane <id>] [--blocks N]` | ✅ |
+| `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
+| `block list [--pane <id>] [--limit N]` | ✅ |
+| `tab focus`, `pane focus`, `pane close`, `block read` | 🚧 stubbed |
+
+The CLI reports `active` for the focused tab and `focused` for the focused pane (`Workspace::active_tab_index` + `PaneGroup::focused_pane_id`). When `--pane` is omitted, requests default to the focused pane of the active tab.
+
+### Architecture (where the code lives)
+
+- **Wire protocol** — `app/src/control_server/wire.rs`: `Request` / `Response` enums with `serde(tag = "kind", rename_all = "snake_case")`. Block ids are `String` (matches Warp's `BlockId(String)`); tab/pane ids are `u64` (`EntityId` as a number).
+- **Framing** — `app/src/control_server/framing.rs`: 4-byte big-endian length prefix + JSON bytes, with both async (server) and sync (CLI client) helpers.
+- **Server** — `app/src/control_server/mod.rs`: binds `~/Library/Application Support/dev.warp.WarpOss/control.sock` (perm `0o600`) on `LaunchMode::App` startup. `ControlModel` singleton owns the accept loop; each connection is a one-shot request → response. Handlers hop onto the main thread via `ModelSpawner` to read/write the live Entity model.
+- **CLI client** — `app/src/cli_control/mod.rs`: synchronous Unix-socket client, pretty-prints responses to stdout.
+- **Fast path** — `app/src/lib.rs`: `Control` subcommands short-circuit before `run_internal`, so a CLI invocation is purely a client. Without this, every call would spin up a full GUI app context (incl. a `terminal-server` child) and collide on the socket.
+
+### Important quirks
+
+- **Active-tab dispatch.** `NewTab` / `CloseTab` call `Workspace::handle_action(&WorkspaceAction::…, ctx)` directly. Earlier attempts used `dispatch_typed_action` and silently no-op'd ("no view handled it") because the singleton-model background task isn't in any focus chain.
+- **`pane split`** uses the same pattern: locate the owning `PaneGroup` view and call `handle_action(&PaneGroupAction::Add(Direction::…), ctx)`. That's the same code path keybindings use, so splits inherit shell-selection / focus behavior.
+- **exFAT codesign trap (build).** When the `target/` directory is a symlink to an external exFAT drive, `codesign` chokes on AppleDouble `._*` files. Workaround: copy the bundled `.app` to APFS, then `codesign --force --deep` there. See "macOS local-build gotchas" below.
+- **Restart resets sessions.** Killing/relaunching `warp-oss` wipes live shells (SSH sessions especially). The tab structure is restored from disk but PTYs aren't.
+
+### Design context (kept for reference)
 
 Architectural seams that look promising:
 - `warp-oss terminal-server --parent-pid=...` subprocess — Warp already separates the UI from the terminal/PTY backend. That separation implies an internal IPC that could be exposed or proxied.
@@ -107,9 +134,10 @@ Key facts from the code:
 
 Streaming (`block tail`, `subscribe_output`) is another 2-3 days because it needs event subscriptions on the Entity side, not just one-shot reads.
 
-#### Current work
+#### Current state
 
-Branch `feat/control-cli` is the in-progress implementation of the above.
+Implemented and merged to `feat/control-cli` (pushed to the fork). See the
+table at the top of this file for what's wired vs. stubbed.
 
 **Risks:**
 - Entity reads on background tasks must go through `spawner.spawn_in_main`-style indirection — can't just lock the model. Adds latency (single-digit ms per RPC).
