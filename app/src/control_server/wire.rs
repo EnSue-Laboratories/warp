@@ -26,7 +26,9 @@ pub enum Request {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitDir {
+    Left,
     Right,
+    Up,
     Down,
 }
 

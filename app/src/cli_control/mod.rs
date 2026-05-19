@@ -83,7 +83,9 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
                     None => None,
                 },
                 direction: match direction {
+                    SplitDirection::Left => SplitDir::Left,
                     SplitDirection::Right => SplitDir::Right,
+                    SplitDirection::Up => SplitDir::Up,
                     SplitDirection::Down => SplitDir::Down,
                 },
             }

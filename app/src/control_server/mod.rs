@@ -21,10 +21,12 @@ use warpui::{AppContext, Entity, EntityId, SingletonEntity, ViewHandle};
 use crate::terminal::view::TerminalView;
 use warpui::TypedActionView;
 
+use crate::pane_group::{PaneGroup, PaneGroupAction};
+use crate::pane_group::tree::Direction as PaneDirection;
 use crate::workspace::action::WorkspaceAction;
 use crate::workspace::registry::WorkspaceRegistry;
 use crate::workspace::view::Workspace;
-use wire::{BlockEntry, PaneSummary, Request, Response, TabSummary};
+use wire::{BlockEntry, PaneSummary, Request, Response, SplitDir, TabSummary};
 
 /// Singleton model that owns the control socket task.
 pub struct ControlModel;
@@ -155,9 +157,9 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::NewTab => handle_new_tab(ctx),
         Request::CloseTab { tab } => handle_close_tab(tab, ctx),
         Request::ListBlocks { pane, limit } => handle_list_blocks(pane, limit, ctx),
+        Request::SplitPane { pane, direction } => handle_split_pane(pane, direction, ctx),
         Request::FocusTab { .. }
         | Request::FocusPane { .. }
-        | Request::SplitPane { .. }
         | Request::ClosePane { .. }
         | Request::ReadBlock { .. } => Response::Error {
             message: "not implemented in v0".into(),
@@ -200,9 +202,26 @@ fn lookup_terminal_view(wire_pane_id: u64, ctx: &AppContext) -> Option<ViewHandl
     None
 }
 
+/// The default pane for commands that omit `--pane`: the focused pane of the
+/// active tab. Falls back to the first terminal pane in the active tab, then
+/// to the first terminal pane overall.
 fn first_pane_wire_id(ctx: &AppContext) -> Option<u64> {
     let workspace = first_workspace(ctx)?;
-    let groups = workspace.as_ref(ctx).list_tab_pane_groups(ctx);
+    let ws = workspace.as_ref(ctx);
+    let active_idx = ws.active_tab_index();
+    if let Some(active_tab) = ws.tabs.get(active_idx) {
+        let pg = active_tab.pane_group.as_ref(ctx);
+        let focused = pg.focused_pane_id(ctx);
+        if let Some(view) = pg.terminal_view_from_pane_id(focused, ctx) {
+            return Some(entity_id_to_u64(view.id()));
+        }
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                return Some(entity_id_to_u64(view.id()));
+            }
+        }
+    }
+    let groups = ws.list_tab_pane_groups(ctx);
     let first = groups.first()?;
     let term = first.terminal_ids.first()?;
     Some(entity_id_to_u64(*term))
@@ -214,14 +233,16 @@ fn handle_list_tabs(ctx: &mut AppContext) -> Response {
     let Some(workspace) = first_workspace(ctx) else {
         return Response::Tabs { tabs: vec![] };
     };
-    let groups = workspace.as_ref(ctx).list_tab_pane_groups(ctx);
+    let ws = workspace.as_ref(ctx);
+    let active_idx = ws.active_tab_index();
+    let groups = ws.list_tab_pane_groups(ctx);
     let tabs = groups
         .into_iter()
         .map(|tpg| TabSummary {
             id: entity_id_to_u64(tpg.pane_group_id),
             index: tpg.tab_idx,
             title: None,
-            active: false,
+            active: tpg.tab_idx == active_idx,
             pane_ids: tpg
                 .terminal_ids
                 .iter()
@@ -236,7 +257,9 @@ fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response 
     let Some(workspace) = first_workspace(ctx) else {
         return Response::Panes { panes: vec![] };
     };
-    let groups = workspace.as_ref(ctx).list_tab_pane_groups(ctx);
+    let ws = workspace.as_ref(ctx);
+    let active_idx = ws.active_tab_index();
+    let groups = ws.list_tab_pane_groups(ctx);
     let mut panes = Vec::new();
     for tpg in groups {
         let tab_id = entity_id_to_u64(tpg.pane_group_id);
@@ -245,16 +268,37 @@ fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response 
                 continue;
             }
         }
+        // The focused pane id is meaningful per pane group; consider a pane
+        // "focused" only when its tab is also active.
+        let focused_pid = ws
+            .tabs
+            .get(tpg.tab_idx)
+            .map(|tab| tab.pane_group.as_ref(ctx).focused_pane_id(ctx));
         for term_id in &tpg.terminal_ids {
-            let cwd = lookup_terminal_view(entity_id_to_u64(*term_id), ctx)
-                .and_then(|view| view.as_ref(ctx).pwd());
+            let view = lookup_terminal_view(entity_id_to_u64(*term_id), ctx);
+            let cwd = view.as_ref().and_then(|v| v.as_ref(ctx).pwd());
+            // Match the pane id we'd return to whatever PaneGroup considers focused.
+            let is_focused = if tpg.tab_idx == active_idx {
+                match (focused_pid, &view) {
+                    (Some(pid), Some(v)) => {
+                        // The focused PaneId corresponds to a TerminalView with this EntityId.
+                        let v_id = entity_id_to_u64(v.id());
+                        let pg = ws.tabs[tpg.tab_idx].pane_group.as_ref(ctx);
+                        pg.terminal_view_from_pane_id(pid, ctx)
+                            .map_or(false, |fv| entity_id_to_u64(fv.id()) == v_id)
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
             panes.push(PaneSummary {
                 id: entity_id_to_u64(*term_id),
                 tab_id,
                 tab_index: tpg.tab_idx,
                 title: None,
                 cwd,
-                focused: false,
+                focused: is_focused,
             });
         }
     }
@@ -365,6 +409,57 @@ fn handle_list_blocks(pane: Option<u64>, limit: usize, ctx: &mut AppContext) -> 
             .collect::<Vec<_>>()
     });
     Response::Blocks { blocks: entries }
+}
+
+fn handle_split_pane(
+    pane: Option<u64>,
+    direction: SplitDir,
+    ctx: &mut AppContext,
+) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let Some(pane_group) = pane_group_for_pane(pane_wire, ctx) else {
+        return Response::Error {
+            message: format!("pane {pane_wire} not found"),
+        };
+    };
+    let dir = match direction {
+        SplitDir::Left => PaneDirection::Left,
+        SplitDir::Right => PaneDirection::Right,
+        SplitDir::Up => PaneDirection::Up,
+        SplitDir::Down => PaneDirection::Down,
+    };
+    pane_group.update(ctx, |pg, ctx| {
+        pg.handle_action(&PaneGroupAction::Add(dir), ctx);
+    });
+    Response::Ok
+}
+
+/// Find the `ViewHandle<PaneGroup>` that contains a given terminal pane (by
+/// wire id == TerminalView EntityId).
+fn pane_group_for_pane(
+    wire_pane_id: u64,
+    ctx: &AppContext,
+) -> Option<warpui::ViewHandle<PaneGroup>> {
+    let workspace = first_workspace(ctx)?;
+    let ws = workspace.as_ref(ctx);
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                if entity_id_to_u64(view.id()) == wire_pane_id {
+                    return Some(tab.pane_group.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn handle_new_tab(ctx: &mut AppContext) -> Response {

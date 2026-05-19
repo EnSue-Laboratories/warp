@@ -133,8 +133,12 @@ pub struct SplitArgs {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SplitDirection {
+    /// Open the new pane to the left of the source.
+    Left,
     /// Open the new pane to the right of the source.
     Right,
+    /// Open the new pane above the source.
+    Up,
     /// Open the new pane below the source.
     Down,
 }
