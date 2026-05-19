@@ -18,10 +18,12 @@ mod cloud_object;
 mod code;
 mod code_review;
 mod coding_entrypoints;
+#[cfg(unix)]
 mod cli_control;
 mod coding_panel_enablement_state;
 mod command_palette;
 mod completer;
+#[cfg(unix)]
 mod control_server;
 #[allow(dead_code)]
 mod context_chips;
@@ -731,7 +733,15 @@ pub fn run() -> Result<()> {
                 // context (incl. a terminal-server subprocess and a second
                 // `control_server::launch` that collides on the socket).
                 if let warp_cli::CliCommand::Control(control_cmd) = cmd.as_ref() {
+                    #[cfg(unix)]
                     return crate::cli_control::run_standalone(control_cmd.clone());
+                    #[cfg(not(unix))]
+                    {
+                        let _ = control_cmd;
+                        return Err(anyhow::anyhow!(
+                            "`warp control` is only available on Unix targets"
+                        ));
+                    }
                 }
 
                 let (is_sandboxed, computer_use_override) = match cmd.as_ref() {
@@ -1401,10 +1411,11 @@ pub(crate) fn initialize_app(
         AppearanceManager::as_ref(ctx).set_app_icon(ctx);
     }
 
-    // Bring up the control socket for `warp control …`. This is a no-op stub
-    // today; the real implementation will bind a per-instance Unix socket and
-    // serve RPCs against the live session/block model. Gated so headless CLI
-    // and worker subprocesses don't accidentally try to bind.
+    // Bring up the control socket for `warp control …`. Gated so headless
+    // CLI and worker subprocesses don't accidentally try to bind. The
+    // implementation uses Unix-domain sockets; on non-Unix targets the
+    // control surface is simply unavailable.
+    #[cfg(unix)]
     if !launch_mode.is_headless() {
         control_server::launch(ctx);
     }

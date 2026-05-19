@@ -154,12 +154,10 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::CloseTab { tab } => handle_close_tab(tab, ctx),
         Request::ListBlocks { pane, limit } => handle_list_blocks(pane, limit, ctx),
         Request::SplitPane { pane, direction } => handle_split_pane(pane, direction, ctx),
-        Request::FocusTab { .. }
-        | Request::FocusPane { .. }
-        | Request::ClosePane { .. }
-        | Request::ReadBlock { .. } => Response::Error {
-            message: "not implemented in v0".into(),
-        },
+        Request::FocusTab { tab } => handle_focus_tab(tab, ctx),
+        Request::FocusPane { pane } => handle_focus_pane(pane, ctx),
+        Request::ClosePane { pane } => handle_close_pane(pane, ctx),
+        Request::ReadBlock { block } => handle_read_block(block, ctx),
     }
 }
 
@@ -170,15 +168,28 @@ fn entity_id_to_u64(id: EntityId) -> u64 {
     id.to_string().parse::<u64>().unwrap_or(0)
 }
 
-/// Return the Workspace for the currently active (frontmost) Warp window.
+/// Return the Workspace control commands should target.
 ///
-/// `WorkspaceRegistry::all_workspaces` is HashMap-backed and yields windows in
-/// arbitrary order, so picking `.next()` would route control commands to a
-/// random workspace whenever multiple Warp windows are open. Mirror the
-/// `active_workspace` pattern from `crate::root_view` instead.
+/// Prefer the frontmost Warp window (matches `crate::root_view::active_workspace`),
+/// so multi-window users don't see commands hit an arbitrary workspace
+/// (the `WorkspaceRegistry` HashMap iterates in arbitrary order).
+///
+/// When no Warp window is frontmost — the common case when invoking the
+/// CLI from another terminal — fall back to any registered workspace,
+/// since callers still expect *some* sensible target. With a single Warp
+/// instance running, this is unambiguous; with multiple, the user can
+/// focus the desired window first to disambiguate.
 fn active_workspace(ctx: &AppContext) -> Option<ViewHandle<Workspace>> {
-    let window_id = ctx.windows().active_window()?;
-    WorkspaceRegistry::as_ref(ctx).get(window_id, ctx)
+    if let Some(window_id) = ctx.windows().active_window() {
+        if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(window_id, ctx) {
+            return Some(ws);
+        }
+    }
+    WorkspaceRegistry::as_ref(ctx)
+        .all_workspaces(ctx)
+        .into_iter()
+        .map(|(_, ws)| ws)
+        .next()
 }
 
 /// Find the `ViewHandle<TerminalView>` for a wire pane id. Wire ids are the
@@ -234,22 +245,35 @@ fn handle_list_tabs(ctx: &mut AppContext) -> Response {
     };
     let ws = workspace.as_ref(ctx);
     let active_idx = ws.active_tab_index();
-    let groups = ws.list_tab_pane_groups(ctx);
-    let tabs = groups
-        .into_iter()
-        .map(|tpg| TabSummary {
-            id: entity_id_to_u64(tpg.pane_group_id),
-            index: tpg.tab_idx,
+    let mut tabs = Vec::new();
+    for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+        let pg = tab.pane_group.as_ref(ctx);
+        let pane_ids: Vec<u64> = visible_terminal_views(pg, ctx)
+            .into_iter()
+            .map(|view| entity_id_to_u64(view.id()))
+            .collect();
+        tabs.push(TabSummary {
+            id: entity_id_to_u64(tab.pane_group.id()),
+            index: tab_idx,
             title: None,
-            active: tpg.tab_idx == active_idx,
-            pane_ids: tpg
-                .terminal_ids
-                .iter()
-                .map(|eid| entity_id_to_u64(*eid))
-                .collect(),
-        })
-        .collect();
+            active: tab_idx == active_idx,
+            pane_ids,
+        });
+    }
     Response::Tabs { tabs }
+}
+
+/// `PaneGroup::terminal_pane_ids` still returns panes that are hidden for
+/// close (the undo-close machinery keeps them in `pane_contents`).
+/// Filter those out so list responses match what the user sees.
+fn visible_terminal_views(
+    pg: &PaneGroup,
+    ctx: &AppContext,
+) -> Vec<ViewHandle<TerminalView>> {
+    pg.terminal_pane_ids()
+        .filter(|pid| !pg.is_pane_hidden_for_close(*pid))
+        .filter_map(|pid| pg.terminal_view_from_pane_id(pid, ctx))
+        .collect()
 }
 
 fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response {
@@ -258,43 +282,27 @@ fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response 
     };
     let ws = workspace.as_ref(ctx);
     let active_idx = ws.active_tab_index();
-    let groups = ws.list_tab_pane_groups(ctx);
     let mut panes = Vec::new();
-    for tpg in groups {
-        let tab_id = entity_id_to_u64(tpg.pane_group_id);
+    for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+        let tab_id = entity_id_to_u64(tab.pane_group.id());
         if let Some(want) = filter_tab {
-            if want != tab_id && want != tpg.tab_idx as u64 {
+            if want != tab_id && want != tab_idx as u64 {
                 continue;
             }
         }
-        // The focused pane id is meaningful per pane group; consider a pane
-        // "focused" only when its tab is also active.
-        let focused_pid = ws
-            .tabs
-            .get(tpg.tab_idx)
-            .map(|tab| tab.pane_group.as_ref(ctx).focused_pane_id(ctx));
-        for term_id in &tpg.terminal_ids {
-            let view = lookup_terminal_view(entity_id_to_u64(*term_id), ctx);
-            let cwd = view.as_ref().and_then(|v| v.as_ref(ctx).pwd());
-            // Match the pane id we'd return to whatever PaneGroup considers focused.
-            let is_focused = if tpg.tab_idx == active_idx {
-                match (focused_pid, &view) {
-                    (Some(pid), Some(v)) => {
-                        // The focused PaneId corresponds to a TerminalView with this EntityId.
-                        let v_id = entity_id_to_u64(v.id());
-                        let pg = ws.tabs[tpg.tab_idx].pane_group.as_ref(ctx);
-                        pg.terminal_view_from_pane_id(pid, ctx)
-                            .map_or(false, |fv| entity_id_to_u64(fv.id()) == v_id)
-                    }
-                    _ => false,
-                }
-            } else {
-                false
-            };
+        let pg = tab.pane_group.as_ref(ctx);
+        let focused_pid = pg.focused_pane_id(ctx);
+        let focused_view_id = pg
+            .terminal_view_from_pane_id(focused_pid, ctx)
+            .map(|v| entity_id_to_u64(v.id()));
+        for view in visible_terminal_views(pg, ctx) {
+            let wire_id = entity_id_to_u64(view.id());
+            let cwd = view.as_ref(ctx).pwd();
+            let is_focused = tab_idx == active_idx && focused_view_id == Some(wire_id);
             panes.push(PaneSummary {
-                id: entity_id_to_u64(*term_id),
+                id: wire_id,
                 tab_id,
-                tab_index: tpg.tab_idx,
+                tab_index: tab_idx,
                 title: None,
                 cwd,
                 focused: is_focused,
@@ -429,10 +437,157 @@ fn handle_split_pane(
         SplitDir::Up => PaneDirection::Up,
         SplitDir::Down => PaneDirection::Down,
     };
+    // `PaneGroup::add_terminal_pane` uses `focused_pane_id` as the split
+    // source, so to honor `--pane <id>` we have to focus the requested pane
+    // first.
+    let target = EntityId::from_usize(pane_wire as usize);
     pane_group.update(ctx, |pg, ctx| {
+        pg.handle_action(&PaneGroupAction::FocusTerminalView(target), ctx);
         pg.handle_action(&PaneGroupAction::Add(dir), ctx);
     });
     Response::Ok
+}
+
+fn handle_focus_tab(tab: u64, ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    let groups = workspace.as_ref(ctx).list_tab_pane_groups(ctx);
+    let index = groups.iter().find_map(|tpg| {
+        if entity_id_to_u64(tpg.pane_group_id) == tab || tpg.tab_idx as u64 == tab {
+            Some(tpg.tab_idx)
+        } else {
+            None
+        }
+    });
+    let Some(index) = index else {
+        return Response::Error {
+            message: format!("tab {tab} not found"),
+        };
+    };
+    workspace.update(ctx, |ws, ctx| {
+        ws.handle_action(&WorkspaceAction::ActivateTab(index), ctx);
+    });
+    Response::Ok
+}
+
+fn handle_focus_pane(pane: u64, ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    // Find the tab index containing this pane so we can activate the tab
+    // before focusing the pane inside it. Otherwise focusing a pane in a
+    // background tab just shuffles hidden state.
+    let target = EntityId::from_usize(pane as usize);
+    let mut owner_tab_idx: Option<usize> = None;
+    let mut owner_pane_group: Option<warpui::ViewHandle<PaneGroup>> = None;
+    {
+        let ws = workspace.as_ref(ctx);
+        for (idx, tab) in ws.tabs.iter().enumerate() {
+            let pg = tab.pane_group.as_ref(ctx);
+            for pid in pg.terminal_pane_ids() {
+                if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                    if entity_id_to_u64(view.id()) == pane {
+                        owner_tab_idx = Some(idx);
+                        owner_pane_group = Some(tab.pane_group.clone());
+                        break;
+                    }
+                }
+            }
+            if owner_tab_idx.is_some() {
+                break;
+            }
+        }
+    }
+    let Some(idx) = owner_tab_idx else {
+        return Response::Error {
+            message: format!("pane {pane} not found"),
+        };
+    };
+    workspace.update(ctx, |ws, ctx| {
+        ws.handle_action(&WorkspaceAction::ActivateTab(idx), ctx);
+    });
+    if let Some(pg) = owner_pane_group {
+        pg.update(ctx, |pg, ctx| {
+            pg.handle_action(&PaneGroupAction::FocusTerminalView(target), ctx);
+        });
+    }
+    Response::Ok
+}
+
+fn handle_close_pane(pane: u64, ctx: &mut AppContext) -> Response {
+    // We need the `PaneId` of the pane to close — `PaneGroup::close_pane`
+    // takes a `PaneId`, not the `EntityId` we use as wire id. Find the
+    // owning PaneGroup, look up the `PaneId` whose terminal view matches
+    // our wire id, then close it without confirmation (control commands
+    // are explicit).
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    let ws = workspace.as_ref(ctx);
+    let mut found: Option<(warpui::ViewHandle<PaneGroup>, crate::pane_group::pane::PaneId)> = None;
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                if entity_id_to_u64(view.id()) == pane {
+                    found = Some((tab.pane_group.clone(), pid));
+                    break;
+                }
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let Some((pane_group, pid)) = found else {
+        return Response::Error {
+            message: format!("pane {pane} not found"),
+        };
+    };
+    pane_group.update(ctx, |pg, ctx| {
+        pg.close_pane(pid, ctx);
+    });
+    Response::Ok
+}
+
+fn handle_read_block(block_id: String, ctx: &mut AppContext) -> Response {
+    use crate::terminal::model::BlockId;
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    let needle = BlockId::from(block_id.clone());
+    let ws = workspace.as_ref(ctx);
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) else {
+                continue;
+            };
+            let pane_wire = entity_id_to_u64(view.id());
+            let entry = {
+                let model = view.as_ref(ctx).model.lock();
+                model
+                    .block_list()
+                    .block_with_id(&needle)
+                    .map(|b| block_to_entry(b, pane_wire))
+            };
+            if let Some(entry) = entry {
+                return Response::Block { block: entry };
+            }
+        }
+    }
+    Response::Error {
+        message: format!("block {block_id} not found"),
+    }
 }
 
 /// Find the `ViewHandle<PaneGroup>` that contains a given terminal pane (by

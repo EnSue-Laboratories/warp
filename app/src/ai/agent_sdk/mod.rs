@@ -204,9 +204,14 @@ fn dispatch_command(
             }
             api_key::run(ctx, global_options, api_key_cmd)
         }
+        #[cfg(unix)]
         CliCommand::Control(control_cmd) => {
             crate::cli_control::run(ctx, global_options, control_cmd)
         }
+        #[cfg(not(unix))]
+        CliCommand::Control(_) => Err(anyhow::anyhow!(
+            "`warp control` is only available on Unix targets"
+        )),
     }
 }
 
