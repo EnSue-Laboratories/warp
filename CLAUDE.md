@@ -16,13 +16,18 @@ There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that docume
 
 | Subcommand | Status |
 |---|---|
-| `tab list` / `tab new` / `tab close <id>` | ✅ |
+| `tab list` / `tab new` / `tab close <id>` / `tab focus <id>` | ✅ |
 | `pane list [--tab <id>]` / `pane send <id> "<cmd>"` / `pane read [--pane <id>] [--blocks N]` | ✅ |
-| `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
-| `block list [--pane <id>] [--limit N]` | ✅ |
-| `tab focus`, `pane focus`, `pane close`, `block read` | 🚧 stubbed |
+| `pane focus <id>` / `pane close <id>` / `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
+| `block list [--pane <id>] [--limit N]` / `block read <id>` | ✅ |
 
-The CLI reports `active` for the focused tab and `focused` for the focused pane (`Workspace::active_tab_index` + `PaneGroup::focused_pane_id`). When `--pane` is omitted, requests default to the focused pane of the active tab.
+The CLI reports `active` for the focused tab and `focused` for the focused pane (`Workspace::active_tab_index` + `PaneGroup::focused_pane_id`). When `--pane` is omitted, requests default to the focused pane of the active tab. `pane focus <id>` automatically activates the owning tab so cross-tab focus actually moves the user.
+
+**Target workspace selection.** Requests target the frontmost Warp window via `ctx.windows().active_window()` → `WorkspaceRegistry::get`. When no Warp window is frontmost (typical when invoking the CLI from another terminal), the server falls back to any registered workspace — unambiguous with one Warp instance, "first registered" with multiple (focus the desired window first to disambiguate).
+
+**Hidden-for-close panes.** `PaneGroup` keeps closed panes in `pane_contents` for undo-close. The list/lookup helpers filter them via `PaneGroup::is_pane_hidden_for_close` so responses match what the user sees.
+
+**Platform gating.** The control surface is `#[cfg(unix)]`. On Windows/WASM, `warp control …` returns a clear "only available on Unix targets" error. The Unix-only `std::os::unix::net::Unix*` types are never reached on non-Unix builds.
 
 ### Architecture (where the code lives)
 

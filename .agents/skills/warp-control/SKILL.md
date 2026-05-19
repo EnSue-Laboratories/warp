@@ -38,16 +38,20 @@ If the user is just asking to run a one-off command and doesn't care which termi
 The binary is the same `warp-oss` that runs the GUI; the `control` subcommand is a fast-path client that only talks to the socket.
 
 ```
-warp-oss control tab list
-warp-oss control tab new
-warp-oss control tab close <id>
+warp-oss control tab   list
+warp-oss control tab   new
+warp-oss control tab   close <id>
+warp-oss control tab   focus <id>
 
-warp-oss control pane list [--tab <id>]
-warp-oss control pane send  <id> "<command>"            # executes as a block
-warp-oss control pane read  [--pane <id>] [--blocks N]   # default N=10
-warp-oss control pane split [--pane <id>] --direction <left|right|up|down>
+warp-oss control pane  list  [--tab <id>]
+warp-oss control pane  send  <id> "<command>"             # executes as a block
+warp-oss control pane  read  [--pane <id>] [--blocks N]   # default N=10
+warp-oss control pane  focus <id>                         # also activates the owning tab
+warp-oss control pane  close <id>
+warp-oss control pane  split [--pane <id>] --direction <left|right|up|down>
 
 warp-oss control block list [--pane <id>] [--limit N]
+warp-oss control block read  <id>                         # id from `block list`
 ```
 
 Where the binary lives in the maintainer's setup (use whichever exists):
@@ -137,7 +141,6 @@ sleep 1
 | `could not connect to Warp control socket … — is Warp running?` | No Warp instance, or one is mid-shutdown. | `pgrep -lf warp-oss`; if missing, ask the user to launch it. |
 | `pane <id> not found` | Stale id from before a tab was closed / app restarted. | Re-run `pane list` and use the fresh id. |
 | `tab <id> not found` (for `tab close`) | Same as above. | Re-run `tab list`. Note `tab close` accepts either the tab id OR the index. |
-| `not implemented in v0` | `tab focus`, `pane focus`, `pane close`, `block read`. | Don't use these yet; work around with `tab close` + `pane send` + `pane read`. |
 | `pane send` returns `ok` but `pane read` shows nothing | Shell hasn't run yet, or you're reading too few blocks. | `sleep 2; pane read --blocks 5`. Long commands need more time. |
 
 ## Don't
