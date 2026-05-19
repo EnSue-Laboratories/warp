@@ -174,19 +174,22 @@ fn entity_id_to_u64(id: EntityId) -> u64 {
     id.to_string().parse::<u64>().unwrap_or(0)
 }
 
-fn first_workspace(ctx: &AppContext) -> Option<ViewHandle<Workspace>> {
-    WorkspaceRegistry::as_ref(ctx)
-        .all_workspaces(ctx)
-        .into_iter()
-        .map(|(_, ws)| ws)
-        .next()
+/// Return the Workspace for the currently active (frontmost) Warp window.
+///
+/// `WorkspaceRegistry::all_workspaces` is HashMap-backed and yields windows in
+/// arbitrary order, so picking `.next()` would route control commands to a
+/// random workspace whenever multiple Warp windows are open. Mirror the
+/// `active_workspace` pattern from `crate::root_view` instead.
+fn active_workspace(ctx: &AppContext) -> Option<ViewHandle<Workspace>> {
+    let window_id = ctx.windows().active_window()?;
+    WorkspaceRegistry::as_ref(ctx).get(window_id, ctx)
 }
 
 /// Find the `ViewHandle<TerminalView>` for a wire pane id. Wire ids are the
 /// `EntityId` of the terminal view (matching what `list_tab_pane_groups`
 /// returns in `terminal_ids`), so we iterate panes and compare ids.
 fn lookup_terminal_view(wire_pane_id: u64, ctx: &AppContext) -> Option<ViewHandle<TerminalView>> {
-    let workspace = first_workspace(ctx)?;
+    let workspace = active_workspace(ctx)?;
     let ws = workspace.as_ref(ctx);
     for tab in ws.tabs.iter() {
         let pg = tab.pane_group.as_ref(ctx);
@@ -206,7 +209,7 @@ fn lookup_terminal_view(wire_pane_id: u64, ctx: &AppContext) -> Option<ViewHandl
 /// active tab. Falls back to the first terminal pane in the active tab, then
 /// to the first terminal pane overall.
 fn first_pane_wire_id(ctx: &AppContext) -> Option<u64> {
-    let workspace = first_workspace(ctx)?;
+    let workspace = active_workspace(ctx)?;
     let ws = workspace.as_ref(ctx);
     let active_idx = ws.active_tab_index();
     if let Some(active_tab) = ws.tabs.get(active_idx) {
@@ -230,7 +233,7 @@ fn first_pane_wire_id(ctx: &AppContext) -> Option<u64> {
 // -------- handlers ---------------------------------------------------------
 
 fn handle_list_tabs(ctx: &mut AppContext) -> Response {
-    let Some(workspace) = first_workspace(ctx) else {
+    let Some(workspace) = active_workspace(ctx) else {
         return Response::Tabs { tabs: vec![] };
     };
     let ws = workspace.as_ref(ctx);
@@ -254,7 +257,7 @@ fn handle_list_tabs(ctx: &mut AppContext) -> Response {
 }
 
 fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response {
-    let Some(workspace) = first_workspace(ctx) else {
+    let Some(workspace) = active_workspace(ctx) else {
         return Response::Panes { panes: vec![] };
     };
     let ws = workspace.as_ref(ctx);
@@ -447,7 +450,7 @@ fn pane_group_for_pane(
     wire_pane_id: u64,
     ctx: &AppContext,
 ) -> Option<warpui::ViewHandle<PaneGroup>> {
-    let workspace = first_workspace(ctx)?;
+    let workspace = active_workspace(ctx)?;
     let ws = workspace.as_ref(ctx);
     for tab in ws.tabs.iter() {
         let pg = tab.pane_group.as_ref(ctx);
@@ -463,7 +466,7 @@ fn pane_group_for_pane(
 }
 
 fn handle_new_tab(ctx: &mut AppContext) -> Response {
-    let Some(workspace) = first_workspace(ctx) else {
+    let Some(workspace) = active_workspace(ctx) else {
         return Response::Error {
             message: "no active workspace".into(),
         };
@@ -480,7 +483,7 @@ fn handle_new_tab(ctx: &mut AppContext) -> Response {
 }
 
 fn handle_close_tab(tab: u64, ctx: &mut AppContext) -> Response {
-    let Some(workspace) = first_workspace(ctx) else {
+    let Some(workspace) = active_workspace(ctx) else {
         return Response::Error {
             message: "no active workspace".into(),
         };
