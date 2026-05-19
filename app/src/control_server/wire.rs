@@ -21,6 +21,11 @@ pub enum Request {
     ClosePane { pane: u64 },
     ListBlocks { pane: Option<u64>, limit: usize },
     ReadBlock { block: String },
+    /// Write raw bytes verbatim to a pane's PTY. No newline appended, no
+    /// command-block submission semantics. Useful for driving TUI apps.
+    WriteBytes { pane: Option<u64>, bytes: Vec<u8> },
+    /// Send a named key (or a chord like "ctrl-c") to a pane's PTY.
+    Keystroke { pane: Option<u64>, key: String },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

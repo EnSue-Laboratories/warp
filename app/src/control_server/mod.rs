@@ -158,6 +158,8 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::FocusPane { pane } => handle_focus_pane(pane, ctx),
         Request::ClosePane { pane } => handle_close_pane(pane, ctx),
         Request::ReadBlock { block } => handle_read_block(block, ctx),
+        Request::WriteBytes { pane, bytes } => handle_write_bytes(pane, bytes, ctx),
+        Request::Keystroke { pane, key } => handle_keystroke(pane, key, ctx),
     }
 }
 
@@ -609,6 +611,117 @@ fn pane_group_for_pane(
         }
     }
     None
+}
+
+fn handle_write_bytes(pane: Option<u64>, bytes: Vec<u8>, ctx: &mut AppContext) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let manager = match terminal_manager_for_pane(pane_wire, ctx) {
+        Some(m) => m,
+        None => {
+            return Response::Error {
+                message: format!("pane {pane_wire} not found"),
+            }
+        }
+    };
+    manager.update(ctx, |mgr, ctx| {
+        mgr.write_pty_bytes(bytes, ctx);
+    });
+    Response::Ok
+}
+
+fn handle_keystroke(pane: Option<u64>, key: String, ctx: &mut AppContext) -> Response {
+    let Some(bytes) = keystroke_to_bytes(&key) else {
+        return Response::Error {
+            message: format!("unknown key: {key:?}"),
+        };
+    };
+    handle_write_bytes(pane, bytes, ctx)
+}
+
+/// Find the [`Box<dyn TerminalManager>`] handle for a pane id.
+fn terminal_manager_for_pane(
+    wire_pane_id: u64,
+    ctx: &AppContext,
+) -> Option<warpui::ModelHandle<Box<dyn crate::terminal::TerminalManager>>> {
+    let workspace = active_workspace(ctx)?;
+    let ws = workspace.as_ref(ctx);
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                if entity_id_to_u64(view.id()) == wire_pane_id {
+                    return pg.terminal_manager_by_id(pid, ctx);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Map a key name (or `ctrl-<char>` chord) to the bytes the PTY expects.
+/// Returns `None` for unknown names.
+fn keystroke_to_bytes(key: &str) -> Option<Vec<u8>> {
+    let lower = key.trim().to_ascii_lowercase();
+    let bytes: &[u8] = match lower.as_str() {
+        "enter" | "return" | "\\n" => b"\r",
+        "tab" | "\\t" => b"\t",
+        "esc" | "escape" => b"\x1b",
+        "space" => b" ",
+        "backspace" | "bs" => b"\x7f",
+        "delete" | "del" => b"\x1b[3~",
+        "ins" | "insert" => b"\x1b[2~",
+        "up" => b"\x1b[A",
+        "down" => b"\x1b[B",
+        "right" => b"\x1b[C",
+        "left" => b"\x1b[D",
+        "home" => b"\x1b[H",
+        "end" => b"\x1b[F",
+        "pageup" | "pgup" => b"\x1b[5~",
+        "pagedown" | "pgdn" => b"\x1b[6~",
+        "f1" => b"\x1bOP",
+        "f2" => b"\x1bOQ",
+        "f3" => b"\x1bOR",
+        "f4" => b"\x1bOS",
+        "f5" => b"\x1b[15~",
+        "f6" => b"\x1b[17~",
+        "f7" => b"\x1b[18~",
+        "f8" => b"\x1b[19~",
+        "f9" => b"\x1b[20~",
+        "f10" => b"\x1b[21~",
+        "f11" => b"\x1b[23~",
+        "f12" => b"\x1b[24~",
+        _ => {
+            if let Some(rest) = lower.strip_prefix("ctrl-").or_else(|| lower.strip_prefix("c-")) {
+                if rest.len() == 1 {
+                    let c = rest.as_bytes()[0];
+                    // ctrl-<letter> is the ASCII control char (0x01..=0x1A).
+                    // ctrl-space → 0x00. ctrl-[ → 0x1b (esc). ctrl-] → 0x1d.
+                    let code = match c {
+                        b'@' | b' ' => 0u8,
+                        b'a'..=b'z' => c - b'a' + 1,
+                        b'A'..=b'Z' => c - b'A' + 1,
+                        b'[' => 0x1b,
+                        b'\\' => 0x1c,
+                        b']' => 0x1d,
+                        b'^' => 0x1e,
+                        b'_' => 0x1f,
+                        b'?' => 0x7f,
+                        _ => return None,
+                    };
+                    return Some(vec![code]);
+                }
+            }
+            return None;
+        }
+    };
+    Some(bytes.to_vec())
 }
 
 fn handle_new_tab(ctx: &mut AppContext) -> Response {

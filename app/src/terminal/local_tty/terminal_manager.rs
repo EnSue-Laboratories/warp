@@ -2651,6 +2651,12 @@ impl crate::terminal::TerminalManager for TerminalManager {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+
+    fn write_pty_bytes(&self, bytes: Vec<u8>, app: &mut AppContext) {
+        self.pty_controller.update(app, |pty_controller, ctx| {
+            pty_controller.write_bytes(bytes, ctx);
+        });
+    }
 }
 
 impl EventLoopSender for mio_channel::Sender<Message> {

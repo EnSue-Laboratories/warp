@@ -43,15 +43,40 @@ warp-oss control tab   new
 warp-oss control tab   close <id>
 warp-oss control tab   focus <id>
 
-warp-oss control pane  list  [--tab <id>]
-warp-oss control pane  send  <id> "<command>"             # executes as a block
-warp-oss control pane  read  [--pane <id>] [--blocks N]   # default N=10
-warp-oss control pane  focus <id>                         # also activates the owning tab
-warp-oss control pane  close <id>
-warp-oss control pane  split [--pane <id>] --direction <left|right|up|down>
+warp-oss control pane  list      [--tab <id>]
+warp-oss control pane  send      <id> "<command>"             # executes as a block
+warp-oss control pane  write     [--pane <id>] "<text>"       # raw bytes to PTY, no \n
+warp-oss control pane  keystroke [--pane <id>] <key>          # named key / ctrl-<char>
+warp-oss control pane  read      [--pane <id>] [--blocks N]   # default N=10
+warp-oss control pane  focus     <id>                         # also activates the owning tab
+warp-oss control pane  close     <id>
+warp-oss control pane  split     [--pane <id>] --direction <left|right|up|down>
 
 warp-oss control block list [--pane <id>] [--limit N]
-warp-oss control block read  <id>                         # id from `block list`
+warp-oss control block read  <id>                             # id from `block list`
+```
+
+### `send` vs `write` vs `keystroke` — when to use which
+
+| Goal | Use | Notes |
+|---|---|---|
+| Run a shell command and capture its output as a Warp block | `pane send` | The normal case. Goes through Warp's command-block submission. |
+| Drive a TUI app (vim, fzf, less, claude, htop, ssh password prompts) | `pane write` + `pane keystroke` | Bytes go straight to the PTY. No newline appended unless you ask for one. |
+| Send a special key (Enter, Esc, arrows, Tab, Backspace, function keys, ctrl-c…) | `pane keystroke` | Recognized names: `enter` `return` `tab` `esc` `escape` `space` `backspace` `delete` `ins` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `f1`–`f12`. Chords: `ctrl-<char>` or `c-<char>` (e.g. `ctrl-c`, `ctrl-d`, `ctrl-[` = Esc, `ctrl-?` = Backspace). |
+
+**Mixing the two paths is fine.** A common pattern: `pane send <id> "vim file.txt"` to launch the TUI (because `send` waits for the shell prompt and runs the binary), then switch to `pane write` / `pane keystroke` for everything inside vim.
+
+End-to-end vim example, fully driven from outside:
+
+```bash
+WARP=… ; P=2794
+"$WARP" control pane send      $P "vim /tmp/scratch.txt"   ;  sleep 1
+"$WARP" control pane write     --pane $P "i"               ;  sleep 0.2  # insert mode
+"$WARP" control pane write     --pane $P "hello"
+"$WARP" control pane keystroke --pane $P esc               ;  sleep 0.2
+"$WARP" control pane write     --pane $P ":wq"
+"$WARP" control pane keystroke --pane $P enter
+cat /tmp/scratch.txt   # → hello
 ```
 
 Where the binary lives in the maintainer's setup (use whichever exists):

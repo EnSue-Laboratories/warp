@@ -7,8 +7,9 @@ use std::io::{BufReader, BufWriter};
 
 use anyhow::{anyhow, Context, Result};
 use warp_cli::control::{
-    BlockCommand, BlockIdArg, BlockListArgs, ControlCommand, PaneCommand, PaneIdArg,
-    PaneListArgs, PaneReadArgs, SendInputArgs, SplitArgs, SplitDirection, TabCommand, TabIdArg,
+    BlockCommand, BlockIdArg, BlockListArgs, ControlCommand, KeystrokeArgs, PaneCommand,
+    PaneIdArg, PaneListArgs, PaneReadArgs, SendInputArgs, SplitArgs, SplitDirection, TabCommand,
+    TabIdArg, WriteBytesArgs,
 };
 use warp_cli::GlobalOptions;
 use warpui::AppContext;
@@ -59,6 +60,24 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
             Request::SendInput {
                 pane: Some(parse_u64(&pane, "pane")?),
                 text: command,
+            }
+        }
+        ControlCommand::Pane(PaneCommand::Write(WriteBytesArgs { pane, text })) => {
+            Request::WriteBytes {
+                pane: match pane {
+                    Some(s) => Some(parse_u64(&s, "pane")?),
+                    None => None,
+                },
+                bytes: text.into_bytes(),
+            }
+        }
+        ControlCommand::Pane(PaneCommand::Keystroke(KeystrokeArgs { pane, key })) => {
+            Request::Keystroke {
+                pane: match pane {
+                    Some(s) => Some(parse_u64(&s, "pane")?),
+                    None => None,
+                },
+                key,
             }
         }
         ControlCommand::Pane(PaneCommand::Read(PaneReadArgs { pane, blocks })) => {

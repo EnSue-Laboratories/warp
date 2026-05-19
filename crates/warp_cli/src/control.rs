@@ -46,8 +46,21 @@ pub enum PaneCommand {
     /// List panes, optionally filtered by tab.
     List(PaneListArgs),
 
-    /// Send a command to a pane. A trailing newline is appended.
+    /// Send a command to a pane (block-submission path). A trailing
+    /// newline is implicit. For TUI applications (vim, fzf, etc.), use
+    /// `write` or `keystroke` instead.
     Send(SendInputArgs),
+
+    /// Write raw bytes directly to a pane's PTY (no newline, no execute).
+    /// This is the input path for TUI applications.
+    Write(WriteBytesArgs),
+
+    /// Send a named keystroke or chord to a pane's PTY.
+    ///
+    /// Supported names: enter, return, esc, escape, tab, backspace, space,
+    /// up, down, left, right, home, end, pageup, pagedown, delete, ins,
+    /// f1..f12, and ctrl-<char> chords (e.g. `ctrl-c`, `ctrl-d`, `ctrl-z`).
+    Keystroke(KeystrokeArgs),
 
     /// Read a pane's recent output (scrollback summary).
     Read(PaneReadArgs),
@@ -60,6 +73,26 @@ pub enum PaneCommand {
 
     /// Close a pane by id.
     Close(PaneIdArg),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct WriteBytesArgs {
+    /// Pane id (defaults to the focused pane).
+    #[arg(long)]
+    pub pane: Option<String>,
+
+    /// Text to write to the PTY. Bytes are written verbatim (UTF-8).
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct KeystrokeArgs {
+    /// Pane id (defaults to the focused pane).
+    #[arg(long)]
+    pub pane: Option<String>,
+
+    /// Key name (e.g. `enter`, `esc`, `up`) or a `ctrl-<char>` chord.
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Subcommand)]

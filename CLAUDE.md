@@ -18,6 +18,7 @@ There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that docume
 |---|---|
 | `tab list` / `tab new` / `tab close <id>` / `tab focus <id>` | ✅ |
 | `pane list [--tab <id>]` / `pane send <id> "<cmd>"` / `pane read [--pane <id>] [--blocks N]` | ✅ |
+| `pane write [--pane <id>] "<text>"` / `pane keystroke [--pane <id>] <key>` | ✅ |
 | `pane focus <id>` / `pane close <id>` / `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
 | `block list [--pane <id>] [--limit N]` / `block read <id>` | ✅ |
 
@@ -28,6 +29,12 @@ The CLI reports `active` for the focused tab and `focused` for the focused pane 
 **Hidden-for-close panes.** `PaneGroup` keeps closed panes in `pane_contents` for undo-close. The list/lookup helpers filter them via `PaneGroup::is_pane_hidden_for_close` so responses match what the user sees.
 
 **Platform gating.** The control surface is `#[cfg(unix)]`. On Windows/WASM, `warp control …` returns a clear "only available on Unix targets" error. The Unix-only `std::os::unix::net::Unix*` types are never reached on non-Unix builds.
+
+**`send` vs `write` vs `keystroke`.** Three input paths, picked by what the receiver is:
+- `send` goes through Warp's command-block submission (`TerminalView::execute_command_or_set_pending`). For shell commands.
+- `write` and `keystroke` go through `TerminalManager::write_pty_bytes` → `PtyController::write_bytes`, which is the same raw path Warp uses for keystrokes in alt-screen / TUI mode. For driving vim/fzf/less/etc.
+
+`keystroke` accepts named keys (`enter` `tab` `esc` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `delete` `ins` `backspace` `space` `f1`–`f12`) and `ctrl-<char>` chords. See `keystroke_to_bytes` in `app/src/control_server/mod.rs`.
 
 ### Architecture (where the code lives)
 

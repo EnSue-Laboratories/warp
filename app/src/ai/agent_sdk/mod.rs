@@ -1663,6 +1663,8 @@ fn control_telemetry_action(
         ControlCommand::Tab(TabCommand::Focus(_)) => "tab.focus",
         ControlCommand::Pane(PaneCommand::List(_)) => "pane.list",
         ControlCommand::Pane(PaneCommand::Send(_)) => "pane.send",
+        ControlCommand::Pane(PaneCommand::Write(_)) => "pane.write",
+        ControlCommand::Pane(PaneCommand::Keystroke(_)) => "pane.keystroke",
         ControlCommand::Pane(PaneCommand::Read(_)) => "pane.read",
         ControlCommand::Pane(PaneCommand::Focus(_)) => "pane.focus",
         ControlCommand::Pane(PaneCommand::Split(_)) => "pane.split",
