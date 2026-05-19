@@ -1,4 +1,4 @@
-mod action;
+pub(crate) mod action;
 mod active_session;
 pub mod bonus_grant_notification_model;
 #[cfg(target_os = "macos")]
@@ -14,7 +14,7 @@ mod home;
 mod lightbox_view;
 mod native_modal;
 mod one_time_modal_model;
-mod registry;
+pub(crate) mod registry;
 pub mod rewind_confirmation_dialog;
 pub mod sync_inputs;
 pub mod tab_settings;

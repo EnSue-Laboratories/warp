@@ -1650,11 +1650,19 @@ fn command_to_telemetry_event(command: &CliCommand) -> CliTelemetryEvent {
 fn control_telemetry_action(
     cmd: &warp_cli::control::ControlCommand,
 ) -> &'static str {
-    use warp_cli::control::{BlockCommand, ControlCommand, PaneCommand, SessionCommand};
+    use warp_cli::control::{BlockCommand, ControlCommand, PaneCommand, TabCommand};
     match cmd {
-        ControlCommand::Session(SessionCommand::List) => "session.list",
-        ControlCommand::Pane(PaneCommand::List) => "pane.list",
+        ControlCommand::Tab(TabCommand::List) => "tab.list",
+        ControlCommand::Tab(TabCommand::New) => "tab.new",
+        ControlCommand::Tab(TabCommand::Close(_)) => "tab.close",
+        ControlCommand::Tab(TabCommand::Focus(_)) => "tab.focus",
+        ControlCommand::Pane(PaneCommand::List(_)) => "pane.list",
         ControlCommand::Pane(PaneCommand::Send(_)) => "pane.send",
+        ControlCommand::Pane(PaneCommand::Read(_)) => "pane.read",
+        ControlCommand::Pane(PaneCommand::Focus(_)) => "pane.focus",
+        ControlCommand::Pane(PaneCommand::Split(_)) => "pane.split",
+        ControlCommand::Pane(PaneCommand::Close(_)) => "pane.close",
+        ControlCommand::Block(BlockCommand::List(_)) => "block.list",
         ControlCommand::Block(BlockCommand::Read(_)) => "block.read",
     }
 }

@@ -725,6 +725,15 @@ pub fn run() -> Result<()> {
                 return warp_cli::completions::generate_to_stdout(*shell);
             }
             warp_cli::Command::CommandLine(cmd) => {
+                // Fast path: `warp control …` is a pure socket client and
+                // doesn't need an AppContext. Bypass `run_internal` entirely
+                // — otherwise every CLI invocation spins up a full GUI app
+                // context (incl. a terminal-server subprocess and a second
+                // `control_server::launch` that collides on the socket).
+                if let warp_cli::CliCommand::Control(control_cmd) = cmd.as_ref() {
+                    return crate::cli_control::run_standalone(control_cmd.clone());
+                }
+
                 let (is_sandboxed, computer_use_override) = match cmd.as_ref() {
                     warp_cli::CliCommand::Agent(warp_cli::agent::AgentCommand::Run(run_args)) => (
                         run_args.sandboxed,
