@@ -18,9 +18,11 @@ mod cloud_object;
 mod code;
 mod code_review;
 mod coding_entrypoints;
+mod cli_control;
 mod coding_panel_enablement_state;
 mod command_palette;
 mod completer;
+mod control_server;
 #[allow(dead_code)]
 mod context_chips;
 #[cfg(enable_crash_recovery)]
@@ -1388,6 +1390,14 @@ pub(crate) fn initialize_app(
     #[cfg(target_os = "macos")]
     if !launch_mode.is_headless() {
         AppearanceManager::as_ref(ctx).set_app_icon(ctx);
+    }
+
+    // Bring up the control socket for `warp control …`. This is a no-op stub
+    // today; the real implementation will bind a per-instance Unix socket and
+    // serve RPCs against the live session/block model. Gated so headless CLI
+    // and worker subprocesses don't accidentally try to bind.
+    if !launch_mode.is_headless() {
+        control_server::launch(ctx);
     }
 
     #[cfg(feature = "local_tty")]

@@ -21,6 +21,7 @@ pub mod agent;
 pub mod api_key;
 pub mod completions;
 pub mod config_file;
+pub mod control;
 mod date_time;
 pub mod environment;
 pub mod federate;
@@ -555,6 +556,10 @@ pub enum CliCommand {
     /// Manage API keys.
     #[command(subcommand)]
     ApiKey(crate::api_key::ApiKeyCommand),
+
+    /// Interact with a running Warp instance over its control socket.
+    #[command(subcommand)]
+    Control(crate::control::ControlCommand),
 }
 
 /// A subcommand of the main Warp application. This includes all [`WorkerCommand`]s as well as app-specific debugging tools.

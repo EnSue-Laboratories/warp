@@ -204,6 +204,9 @@ fn dispatch_command(
             }
             api_key::run(ctx, global_options, api_key_cmd)
         }
+        CliCommand::Control(control_cmd) => {
+            crate::cli_control::run(ctx, global_options, control_cmd)
+        }
     }
 }
 
@@ -1408,6 +1411,7 @@ fn command_requires_auth(command: &CliCommand) -> bool {
         CliCommand::HarnessSupport(_) => true,
         CliCommand::Artifact(_) => true,
         CliCommand::ApiKey(_) => true,
+        CliCommand::Control(_) => false,
     }
 }
 
@@ -1637,6 +1641,21 @@ fn command_to_telemetry_event(command: &CliCommand) -> CliTelemetryEvent {
             ApiKeyCommand::Create(_) => CliTelemetryEvent::ApiKeyCreate,
             ApiKeyCommand::Expire(_) => CliTelemetryEvent::ApiKeyExpire,
         },
+        CliCommand::Control(control_cmd) => CliTelemetryEvent::ControlExecute {
+            action: control_telemetry_action(control_cmd),
+        },
+    }
+}
+
+fn control_telemetry_action(
+    cmd: &warp_cli::control::ControlCommand,
+) -> &'static str {
+    use warp_cli::control::{BlockCommand, ControlCommand, PaneCommand, SessionCommand};
+    match cmd {
+        ControlCommand::Session(SessionCommand::List) => "session.list",
+        ControlCommand::Pane(PaneCommand::List) => "pane.list",
+        ControlCommand::Pane(PaneCommand::Send(_)) => "pane.send",
+        ControlCommand::Block(BlockCommand::Read(_)) => "block.read",
     }
 }
 
