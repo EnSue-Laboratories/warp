@@ -3569,7 +3569,13 @@ impl Element for BlockListElement {
 
                     let total_lines = grid_storage_lines + flat_storage_lines;
                     let total_bytes = grid_storage_bytes + flat_storage_bytes;
+                    // Prefix the diagnostic line with the pane id so a
+                    // screenshot of the Warp window is enough for an agent
+                    // (via `warp control pane …`) to know which pane it's
+                    // looking at without first calling `pane list`.
+                    let pane_id = self.terminal_view_id;
                     let text = format!("\
+                            Pane {pane_id}; \
                             Lines: {total_lines} (grid: {grid_storage_lines}, flat: {flat_storage_lines}); \
                             Size: {:#.1} (grid: {:#.1}, flat: {:#.1})\
                         ",
