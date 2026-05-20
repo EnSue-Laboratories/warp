@@ -334,6 +334,7 @@ impl PromptConfiguration {
             ContextChipKind::NodeVersion,
             ContextChipKind::WorkingDirectory,
             ContextChipKind::ShellGitBranch,
+            ContextChipKind::ShellGitWorktree,
             ContextChipKind::GitDiffStats,
             ContextChipKind::KubernetesContext,
         ];

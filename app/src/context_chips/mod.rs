@@ -172,6 +172,11 @@ pub enum ContextChipKind {
         title: String,
     },
     ShellGitBranch,
+    /// Current git worktree (its directory basename). Click opens a picker
+    /// of every worktree in the repo; selecting one runs `cd <path>`.
+    /// Surfaced as a separate pill from `ShellGitBranch` so branches and
+    /// worktrees can be browsed independently.
+    ShellGitWorktree,
     GitDiffStats,
     GithubPullRequest,
     KubernetesContext,
@@ -292,6 +297,12 @@ impl ContextChipKind {
                 Some(builtins::shell_other_git_branches()),
                 GIT_REFRESH_CONFIG,
             )),
+            Self::ShellGitWorktree => Some(ContextChip::shell_builtin(
+                "Git Worktree",
+                builtins::shell_git_worktree(),
+                Some(builtins::shell_other_git_worktrees()),
+                GIT_REFRESH_CONFIG,
+            )),
             Self::GitDiffStats => Some(
                 ContextChip::shell_builtin(
                     "Git Diff Stats",
@@ -392,6 +403,7 @@ impl ContextChipKind {
             Self::Username => ChipValue::Text("alice".to_string()),
             Self::Hostname => ChipValue::Text("ubuntu-04".to_string()),
             Self::ShellGitBranch => ChipValue::Text("git-feature-branch".to_string()),
+            Self::ShellGitWorktree => ChipValue::Text("main-worktree".to_string()),
             Self::GitDiffStats => ChipValue::Text("3 • +10 -2".to_string()),
             Self::GithubPullRequest => ChipValue::Text("PR #123".to_string()),
             Self::VirtualEnvironment => ChipValue::Text("pyenv".to_string()),
@@ -425,6 +437,7 @@ impl ContextChipKind {
             Self::Username => prompt_colors.input_prompt_user_and_host,
             Self::Hostname => prompt_colors.input_prompt_user_and_host,
             Self::ShellGitBranch => prompt_colors.input_prompt_branch,
+            Self::ShellGitWorktree => prompt_colors.input_prompt_branch,
             Self::GitDiffStats => prompt_colors.input_prompt_branch,
             Self::GithubPullRequest => prompt_colors.input_prompt_branch,
             Self::VirtualEnvironment => prompt_colors.input_prompt_virtual_env,
@@ -528,6 +541,7 @@ impl ContextChipKind {
             }
             Self::NodeVersion => Some(Icon::NodeJS),
             Self::ShellGitBranch | Self::SvnBranch => Some(Icon::GitBranch),
+            Self::ShellGitWorktree => Some(Icon::Dataflow02),
             Self::GitDiffStats | Self::SvnDirtyItems => Some(Icon::File),
             Self::GithubPullRequest => Some(Icon::Github),
             Self::KubernetesContext => Some(Icon::Globe),
@@ -552,6 +566,7 @@ pub fn available_chips() -> Vec<ContextChipKind> {
         ContextChipKind::Hostname,
         ContextChipKind::Ssh,
         ContextChipKind::ShellGitBranch,
+        ContextChipKind::ShellGitWorktree,
         ContextChipKind::GitDiffStats,
     ];
     if FeatureFlag::GithubPrPromptChip.is_enabled() {

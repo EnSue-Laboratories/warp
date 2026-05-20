@@ -11,7 +11,7 @@ use crate::code::editor::{add_color, remove_color};
 use crate::code_review::code_review_view::CODE_REVIEW_TOOLTIP_TEXT;
 use crate::code_review::diff_state::DiffStats;
 use crate::context_chips::git_branch_on_click::{
-    is_plausible_new_branch_name, GitBranchOnClickValue,
+    is_plausible_new_branch_name, GitBranchOnClickValue, GitWorktreeOnClickValue,
 };
 use crate::context_chips::node_version_popup::{NodeVersionPopupEvent, NodeVersionPopupView};
 use crate::context_chips::spacing;
@@ -383,6 +383,10 @@ pub enum DisplayChipKind {
         menu_open: bool,
         menu: ViewHandle<DisplayChipMenu>,
     },
+    GitWorktree {
+        menu_open: bool,
+        menu: ViewHandle<DisplayChipMenu>,
+    },
     GithubPullRequest,
     GitDiffStats {
         line_changes_info: Option<GitLineChanges>,
@@ -395,6 +399,7 @@ impl DisplayChipKind {
             DisplayChipKind::WorkingDirectory { menu_open, .. } => *menu_open,
             DisplayChipKind::NodeVersion { popup_open, .. } => *popup_open,
             DisplayChipKind::GitBranch { menu_open, .. } => *menu_open,
+            DisplayChipKind::GitWorktree { menu_open, .. } => *menu_open,
             DisplayChipKind::GithubPullRequest
             | DisplayChipKind::GitDiffStats { .. }
             | DisplayChipKind::Text
@@ -451,15 +456,6 @@ impl GitBranch {
     fn command(&self) -> String {
         format_git_branch_command(&self.0)
     }
-
-    fn icon_for_menu(&self) -> Icon {
-        let branch = GitBranchOnClickValue::decode(&self.0);
-        if branch.is_linked_worktree {
-            Icon::Dataflow02
-        } else {
-            Icon::GitBranch
-        }
-    }
 }
 
 impl GenericMenuItem for GitBranch {
@@ -472,7 +468,42 @@ impl GenericMenuItem for GitBranch {
     }
 
     fn icon(&self, _app: &AppContext) -> Option<Icon> {
-        Some(self.icon_for_menu())
+        Some(Icon::GitBranch)
+    }
+
+    fn action_data(&self) -> String {
+        self.0.clone()
+    }
+}
+
+/// Menu item for the worktree chip's dropdown. The encoded value is a
+/// `GitWorktreeOnClickValue` — a worktree path plus (optionally) the branch
+/// checked out there. Clicking runs `cd <path>` in the active pane.
+#[derive(Debug, Clone)]
+pub struct GitWorktree(String);
+
+impl GitWorktree {
+    fn command(&self) -> String {
+        let value = GitWorktreeOnClickValue::decode(&self.0);
+        format_change_directory_command(&value.path)
+    }
+}
+
+impl GenericMenuItem for GitWorktree {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> String {
+        let value = GitWorktreeOnClickValue::decode(&self.0);
+        match &value.branch_name {
+            Some(branch) => format!("{} ({branch})", value.display_name()),
+            None => value.display_name().to_string(),
+        }
+    }
+
+    fn icon(&self, _app: &AppContext) -> Option<Icon> {
+        Some(Icon::Dataflow02)
     }
 
     fn action_data(&self) -> String {
@@ -641,6 +672,52 @@ impl DisplayChip {
                 });
 
                 DisplayChipKind::GitBranch {
+                    menu_open: false,
+                    menu: menu_view,
+                }
+            }
+            ContextChipKind::ShellGitWorktree => {
+                // Convert worktree path strings to GitWorktree items.
+                let git_worktree_items: Vec<GitWorktree> = chip_result
+                    .on_click_values
+                    .iter()
+                    .map(|encoded| GitWorktree(encoded.clone()))
+                    .collect();
+
+                let menu_view = ctx.add_typed_action_view(move |ctx| {
+                    DisplayChipMenu::new(
+                        git_worktree_items,
+                        None, // No "create new" affordance — worktrees use `git worktree add`.
+                        ChipMenuType::Worktrees,
+                        ctx,
+                    )
+                });
+                ctx.subscribe_to_view(&menu_view, |me, _, event, ctx| match event {
+                    PromptDisplayMenuEvent::MenuAction(generic_event) => {
+                        let action_item = generic_event.action_item.as_any();
+                        let command = if let Some(git_worktree) =
+                            action_item.downcast_ref::<GitWorktree>()
+                        {
+                            git_worktree.command()
+                        } else {
+                            log::warn!(
+                                "MenuAction event should contain a GitWorktree action item"
+                            );
+                            return;
+                        };
+
+                        ctx.emit(PromptDisplayChipEvent::TryExecuteCommand(command));
+                        me.close_git_worktree_menu(ctx);
+                        ctx.notify();
+                    }
+                    PromptDisplayMenuEvent::CloseMenu => {
+                        me.close_git_worktree_menu(ctx);
+                        ctx.emit(PromptDisplayChipEvent::ToggleMenu { open: false });
+                        ctx.notify();
+                    }
+                });
+
+                DisplayChipKind::GitWorktree {
                     menu_open: false,
                     menu: menu_view,
                 }
@@ -920,6 +997,15 @@ impl DisplayChip {
         }
     }
 
+    pub fn close_git_worktree_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if let DisplayChipKind::GitWorktree { menu_open, menu } = &mut self.display_chip_kind {
+            *menu_open = false;
+            menu.update(ctx, |menu, _| {
+                menu.reset_selected_index();
+            });
+        }
+    }
+
     pub fn close_working_directory_menu(&mut self, ctx: &mut ViewContext<Self>) {
         if let DisplayChipKind::WorkingDirectory {
             menu_open, menu, ..
@@ -945,6 +1031,12 @@ impl DisplayChip {
                 }
             }
             DisplayChipKind::GitBranch { menu_open, menu } => {
+                if *menu_open {
+                    ctx.focus(menu);
+                    return true;
+                }
+            }
+            DisplayChipKind::GitWorktree { menu_open, menu } => {
                 if *menu_open {
                     ctx.focus(menu);
                     return true;
@@ -1108,6 +1200,79 @@ impl DisplayChip {
             hover
                 .on_click(|ctx, _app, _position| {
                     ctx.dispatch_typed_action(DisplayChipAction::OpenBranchSelector);
+                })
+                .with_cursor(Cursor::PointingHand)
+                .finish()
+        };
+
+        let mut stack = Stack::new().with_child(hover);
+
+        if menu_open {
+            let positioning = self.menu_positioning_provider.menu_position(app);
+            let (parent_anchor, child_anchor) = Self::positioning_to_anchors(positioning);
+            let offset = match positioning {
+                MenuPositioning::BelowInputBox => vec2f(0., 4.),
+                MenuPositioning::AboveInputBox => vec2f(0., -4.),
+            };
+            stack.add_positioned_overlay_child(
+                ChildView::new(menu).finish(),
+                OffsetPositioning::offset_from_parent(
+                    offset,
+                    ParentOffsetBounds::WindowByPosition,
+                    parent_anchor,
+                    child_anchor,
+                ),
+            );
+        }
+
+        stack.finish()
+    }
+
+    fn git_worktree_chip(
+        &self,
+        menu_open: bool,
+        menu: &ViewHandle<DisplayChipMenu>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let appearance = Appearance::as_ref(app);
+        let font_color = if self.is_in_agent_view {
+            agent_view_chip_color(appearance)
+        } else {
+            appearance.theme().ansi_fg_green()
+        };
+
+        let is_interactive =
+            !self.is_shared_session_viewer && !self.is_cli_agent_session_active(app);
+        let is_in_agent_view = self.is_in_agent_view;
+        let chip_text = self.text.clone();
+        let hover = Hoverable::new(self.mouse_state.clone(), move |state| {
+            let hovered = state.is_hovered() && is_interactive;
+            let mut config =
+                UdiChipConfig::new_with_icon(Icon::Dataflow02, font_color, chip_text.clone())
+                    .with_hovered(hovered);
+            if is_in_agent_view {
+                config = config.for_agent_view();
+            }
+            let chip_element = render_udi_chip(config, appearance);
+
+            let mut stack = Stack::new().with_child(chip_element);
+            if state.is_hovered() && is_interactive && !menu_open {
+                let tool_tip = appearance
+                    .ui_builder()
+                    .tool_tip("Switch worktree".to_string())
+                    .build()
+                    .finish();
+                stack.add_positioned_overlay_child(tool_tip, udi_tooltip_positioning());
+            }
+            stack.finish()
+        });
+
+        let hover = if !is_interactive {
+            hover.finish()
+        } else {
+            hover
+                .on_click(|ctx, _app, _position| {
+                    ctx.dispatch_typed_action(DisplayChipAction::ToggleMenu);
                 })
                 .with_cursor(Cursor::PointingHand)
                 .finish()
@@ -1565,6 +1730,9 @@ impl DisplayChip {
             DisplayChipKind::GitBranch { menu_open, menu } => {
                 Some(self.git_branch_chip(*menu_open, menu, app))
             }
+            DisplayChipKind::GitWorktree { menu_open, menu } => {
+                Some(self.git_worktree_chip(*menu_open, menu, app))
+            }
             DisplayChipKind::GithubPullRequest => Some(self.github_pull_request_chip(app)),
             DisplayChipKind::GitDiffStats { line_changes_info } => {
                 self.git_diff_stats_chip(line_changes_info, app)
@@ -1643,6 +1811,13 @@ impl TypedActionView for DisplayChip {
                     });
                     ctx.notify();
                 }
+                DisplayChipKind::GitWorktree { menu_open, menu } => {
+                    *menu_open = false;
+                    menu.update(ctx, |menu, _| {
+                        menu.reset_selected_index();
+                    });
+                    ctx.notify();
+                }
                 DisplayChipKind::WorkingDirectory {
                     menu_open, menu, ..
                 } => {
@@ -1691,6 +1866,32 @@ impl TypedActionView for DisplayChip {
                             send_telemetry_from_ctx!(
                                 TelemetryEvent::ContextChipInteracted {
                                     chip_type: "git_branch".to_string(),
+                                    action: "opened".to_string(),
+                                    is_udi_enabled,
+                                },
+                                ctx
+                            );
+                        }
+                        ctx.notify();
+                    }
+                    DisplayChipKind::GitWorktree { menu, menu_open } => {
+                        *menu_open = !*menu_open;
+                        let is_menu_open = *menu_open;
+                        if is_menu_open {
+                            ctx.focus(menu);
+                        } else {
+                            menu.update(ctx, |menu, _| {
+                                menu.reset_selected_index();
+                            });
+                        }
+                        ctx.emit(PromptDisplayChipEvent::ToggleMenu { open: is_menu_open });
+                        if is_menu_open {
+                            let is_udi_enabled = InputSettings::as_ref(ctx)
+                                .is_universal_developer_input_enabled(ctx);
+
+                            send_telemetry_from_ctx!(
+                                TelemetryEvent::ContextChipInteracted {
+                                    chip_type: "git_worktree".to_string(),
                                     action: "opened".to_string(),
                                     is_udi_enabled,
                                 },
@@ -1856,26 +2057,12 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace("'", "'\\''"))
 }
 
-fn format_change_directory_command(dir_name: &str) -> String {
+pub(super) fn format_change_directory_command(dir_name: &str) -> String {
     format!("cd {}", shell_single_quote(dir_name))
 }
 
 pub fn format_git_branch_command(encoded_git_branch_on_click_value: &str) -> String {
     let branch = GitBranchOnClickValue::decode(encoded_git_branch_on_click_value);
-    if let Some(worktree_path) = branch.worktree_path {
-        return format_change_directory_command(&worktree_path);
-    }
-
-    if branch.is_linked_worktree {
-        return format!(
-            "echo {}",
-            shell_single_quote(&format!(
-                "Branch '{}' is already checked out in another worktree, but Warp couldn't find its path.",
-                branch.branch_name
-            ))
-        );
-    }
-
     format!("git checkout {}", shell_single_quote(&branch.branch_name))
 }
 
