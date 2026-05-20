@@ -339,7 +339,7 @@ impl DisplayChipMenu {
                     let mut editor = EditorView::new(options, ctx);
                     let placeholder_text = match chip_menu_type {
                         ChipMenuType::Directories => "Search directories...",
-                        ChipMenuType::Branches => "Search branches...",
+                        ChipMenuType::Branches => "Search or create branch...",
                         ChipMenuType::Worktrees => "Search worktrees...",
                         ChipMenuType::Environments => "Search environments...",
                         ChipMenuType::CodeReview => {
