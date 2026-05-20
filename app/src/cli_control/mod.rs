@@ -58,8 +58,11 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
         },
         ControlCommand::Pane(PaneCommand::Send(SendInputArgs { pane, command })) => {
             Request::SendInput {
-                pane: Some(parse_u64(&pane, "pane")?),
-                text: command,
+                pane: match pane {
+                    Some(s) => Some(parse_u64(&s, "pane")?),
+                    None => None,
+                },
+                text: command.join(" "),
             }
         }
         ControlCommand::Pane(PaneCommand::Write(WriteBytesArgs { pane, text })) => {

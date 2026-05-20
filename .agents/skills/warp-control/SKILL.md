@@ -64,16 +64,18 @@ warp-oss control block read  <id>                             # id from `block l
 | Drive a TUI app (vim, fzf, less, claude, htop, ssh password prompts) | `pane write` + `pane keystroke` | Bytes go straight to the PTY. No newline appended unless you ask for one. |
 | Send a special key (Enter, Esc, arrows, Tab, Backspace, function keys, ctrl-c…) | `pane keystroke` | Recognized names: `enter` `return` `tab` `esc` `escape` `space` `backspace` `delete` `ins` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `f1`–`f12`. Chords: `ctrl-<char>` or `c-<char>` (e.g. `ctrl-c`, `ctrl-d`, `ctrl-[` = Esc, `ctrl-?` = Backspace). |
 
-**Mixing the two paths is fine.** A common pattern: `pane send <id> "vim file.txt"` to launch the TUI (because `send` waits for the shell prompt and runs the binary), then switch to `pane write` / `pane keystroke` for everything inside vim.
+**Mixing the two paths is fine.** A common pattern: `pane send --pane <id> vim file.txt` to launch the TUI (because `send` waits for the shell prompt and runs the binary), then switch to `pane write` / `pane keystroke` for everything inside vim.
+
+`pane send` accepts the command as trailing args, so you can usually skip quoting (`pane send --pane 1990 ls -la /tmp` works). Quote only when the command contains shell operators you want the *target* pane's shell to interpret (pipes, redirects, `&&`, etc.).
 
 End-to-end vim example, fully driven from outside:
 
 ```bash
 WARP=… ; P=2794
-"$WARP" control pane send      $P "vim /tmp/scratch.txt"   ;  sleep 1
-"$WARP" control pane write     --pane $P "i"               ;  sleep 0.2  # insert mode
+"$WARP" control pane send      --pane $P vim /tmp/scratch.txt ;  sleep 1
+"$WARP" control pane write     --pane $P "i"                  ;  sleep 0.2  # insert mode
 "$WARP" control pane write     --pane $P "hello"
-"$WARP" control pane keystroke --pane $P esc               ;  sleep 0.2
+"$WARP" control pane keystroke --pane $P esc                  ;  sleep 0.2
 "$WARP" control pane write     --pane $P ":wq"
 "$WARP" control pane keystroke --pane $P enter
 cat /tmp/scratch.txt   # → hello
@@ -95,8 +97,9 @@ WARP=/Volumes/ThinkPlus/warp-target/debug/warp-oss   # adjust to your setup
 "$WARP" control tab list
 "$WARP" control pane list
 
-# 2) Send the command. The ID column from `pane list` is what `pane send` takes.
-"$WARP" control pane send 1990 "ls -la && pwd"
+# 2) Send the command. `--pane` is optional and defaults to the focused pane —
+#    omit it when you want to talk to whatever the user is currently looking at.
+"$WARP" control pane send --pane 1990 "ls -la && pwd"
 
 # 3) Wait briefly for the shell to execute, then read the result.
 sleep 2
@@ -123,14 +126,14 @@ Trailing `precmd-…` blocks with no `$` line are idle shell prompts — skip th
 
 **Run a command and capture its output in one go:**
 ```bash
-"$WARP" control pane send 1990 "<cmd>"
+"$WARP" control pane send --pane 1990 "<cmd>"
 sleep 2
 "$WARP" control pane read --pane 1990 --blocks 2
 ```
 
 **Tail a long-running command** — re-read every few seconds:
 ```bash
-"$WARP" control pane send 1990 "cargo test --workspace 2>&1"
+"$WARP" control pane send --pane 1990 "cargo test --workspace 2>&1"
 while sleep 5; do
   "$WARP" control pane read --pane 1990 --blocks 1
 done
@@ -142,8 +145,7 @@ done
 sleep 1
 # Newest tab is the now-active one — `tab list` shows it, the new pane is
 # also the focused one, so `--pane` can be omitted.
-"$WARP" control pane send "$("$WARP" control pane list | awk '/yes/ {print $1; exit}')" \
-  "ssh user@host"
+"$WARP" control pane send ssh user@host
 ```
 
 **Split for diff-style side-by-side work:**
@@ -155,8 +157,8 @@ sleep 1
 
 **Drive multiple panes independently** — they're separate `SessionId`s with independent BlockLists, no cross-talk:
 ```bash
-"$WARP" control pane send 3106 "tail -f /var/log/foo.log"
-"$WARP" control pane send 2415 "tail -f /var/log/bar.log"
+"$WARP" control pane send --pane 3106 "tail -f /var/log/foo.log"
+"$WARP" control pane send --pane 2415 "tail -f /var/log/bar.log"
 ```
 
 ## Failure modes you'll see

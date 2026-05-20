@@ -71,6 +71,8 @@ use crate::{
     view_components::action_button::{
         ActionButton, ActionButtonTheme, ButtonSize, KeystrokeSource, TooltipAlignment,
     },
+    view_components::DismissibleToast,
+    workspace::ToastStack,
 };
 
 use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START};
@@ -1061,7 +1063,7 @@ pub struct UseAgentToolbar {
     terminal_view_id: EntityId,
     terminal_model: Arc<FairMutex<TerminalModel>>,
 
-    // "Pane <id>" chip — click to copy a `warp-oss control pane send <id> `
+    // "Pane <id>" chip — click to copy a `warp-oss control pane send --pane <id> `
     // template to the clipboard. Surfaces the pane id at all times
     // (including while a long-running TUI like `top` or `vim` is in the
     // foreground) so an external agent can address the pane.
@@ -1097,13 +1099,11 @@ impl UseAgentToolbar {
         let button_size = ButtonSize::XSmall;
 
         let pane_label = format!("Pane {terminal_view_id}");
-        let copy_payload = format!("warp-oss control pane send {terminal_view_id} ");
+        let copy_payload = format!("warp-oss control pane send --pane {terminal_view_id} ");
         let pane_id_button = ctx.add_typed_action_view(|_ctx| {
             ActionButton::new(pane_label, AgentFooterButtonTheme::new(Some(terminal_model.clone())))
                 .with_size(button_size)
-                .with_tooltip(
-                    "Copy `warp-oss control pane send <id> ` to the clipboard (append your command)",
-                )
+                .with_tooltip("Copy pane send template")
                 .with_tooltip_alignment(TooltipAlignment::Left)
                 .on_click(move |ctx| {
                     ctx.dispatch_typed_action(UseAgentToolbarAction::CopyToClipboard(
@@ -1472,6 +1472,14 @@ impl TypedActionView for UseAgentToolbar {
                 ctx.clipboard().write(
                     warpui::clipboard::ClipboardContent::plain_text(text.clone()),
                 );
+                let window_id = ctx.window_id();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::success("Copied to clipboard".to_owned()),
+                        window_id,
+                        ctx,
+                    );
+                });
                 ctx.notify();
             }
         }

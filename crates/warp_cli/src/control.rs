@@ -131,12 +131,17 @@ pub struct PaneListArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct SendInputArgs {
-    /// Pane id (as returned by `pane list`).
-    pub pane: String,
+    /// Pane id (defaults to the focused pane). Matches the convention used
+    /// by `pane write`, `pane keystroke`, `pane read`, and `pane split`.
+    #[arg(long)]
+    pub pane: Option<String>,
 
-    /// The command text to send. The command is executed as a whole block
-    /// (Warp's command-block model), so a trailing newline is implicit.
-    pub command: String,
+    /// The command text to send. Multiple args are joined with single spaces,
+    /// so `pane send --pane <id> ls -la /tmp` works without shell quoting. The
+    /// command is executed as a whole block (Warp's command-block model), so
+    /// a trailing newline is implicit.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args)]
