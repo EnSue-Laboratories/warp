@@ -1,12 +1,12 @@
 use super::{
-    format_create_git_branch_command, format_git_branch_command, truncate_from_beginning,
-    CreateGitBranch, GitBranch, GitLineChanges,
+    format_change_directory_command, format_create_git_branch_command, format_git_branch_command,
+    truncate_from_beginning, CreateGitBranch, GitLineChanges, GitWorktree,
 };
 use crate::context_chips::display_menu::GenericMenuItem;
 use crate::context_chips::{
-    git_branch_on_click::GitBranchOnClickValue, github_pr_display_text_from_url, ContextChipKind,
+    git_branch_on_click::{GitBranchOnClickValue, GitWorktreeOnClickValue},
+    github_pr_display_text_from_url, ContextChipKind,
 };
-use crate::ui_components::icons::Icon;
 
 #[test]
 fn test_github_pr_display_text_from_url() {
@@ -58,52 +58,35 @@ fn test_format_git_branch_command_checks_out_normal_branch() {
 }
 
 #[test]
-fn test_format_git_branch_command_changes_to_linked_worktree_path() {
-    let value = GitBranchOnClickValue {
-        branch_name: "feature-a".to_string(),
-        worktree_path: Some("/tmp/repo feature-a".to_string()),
-        is_linked_worktree: true,
-    }
-    .encode();
-
+fn test_git_worktree_command_cds_to_path() {
+    let value = GitWorktreeOnClickValue::new("/tmp/repo feature-a".to_string(), None).encode();
+    let decoded = GitWorktreeOnClickValue::decode(&value);
     assert_eq!(
-        format_git_branch_command(&value),
+        format_change_directory_command(&decoded.path),
         "cd '/tmp/repo feature-a'"
     );
 }
 
 #[test]
-fn test_format_git_branch_command_reports_missing_linked_worktree_path() {
-    let value = GitBranchOnClickValue {
-        branch_name: "feature-a".to_string(),
-        worktree_path: None,
-        is_linked_worktree: true,
-    }
+fn test_git_worktree_menu_name_includes_branch_when_present() {
+    let value = GitWorktreeOnClickValue::new(
+        "/tmp/repo/feature-a".to_string(),
+        Some("feature-a".to_string()),
+    )
     .encode();
-
-    assert_eq!(
-        format_git_branch_command(&value),
-        "echo 'Branch '\\''feature-a'\\'' is already checked out in another worktree, but Warp couldn'\\''t find its path.'"
-    );
+    assert_eq!(GitWorktree(value).name(), "feature-a (feature-a)");
 }
 
 #[test]
-fn test_git_branch_menu_icon_uses_branch_icon_for_normal_branch() {
-    let value = GitBranchOnClickValue::new("feature-a".to_string()).encode();
-
-    assert_eq!(GitBranch(value).icon_for_menu(), Icon::GitBranch);
+fn test_git_worktree_menu_name_falls_back_to_dirname_when_detached() {
+    let value = GitWorktreeOnClickValue::new("/tmp/repo/detached/".to_string(), None).encode();
+    assert_eq!(GitWorktree(value).name(), "detached");
 }
 
 #[test]
-fn test_git_branch_menu_icon_uses_worktree_icon_for_linked_worktree() {
-    let value = GitBranchOnClickValue {
-        branch_name: "feature-a".to_string(),
-        worktree_path: Some("/tmp/repo-feature-a".to_string()),
-        is_linked_worktree: true,
-    }
-    .encode();
-
-    assert_eq!(GitBranch(value).icon_for_menu(), Icon::Dataflow02);
+fn test_git_worktree_action_data_round_trips_encoded_value() {
+    let value = GitWorktreeOnClickValue::new("/tmp/repo".to_string(), None).encode();
+    assert_eq!(GitWorktree(value.clone()).action_data(), value);
 }
 
 #[test]

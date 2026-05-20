@@ -1,66 +1,93 @@
-use std::collections::HashMap;
-
-pub(crate) const WORKTREE_LIST_SEPARATOR: &str = "\u{1e}";
+//! Click-action payload encoding + filtering for the branch / worktree chips.
+//!
+//! Each chip has its own pill in the prompt toolbar:
+//!
+//! - **Branch chip** (`ContextChipKind::ShellGitBranch`) lists checkout-able
+//!   branches. Linked-worktree entries (those with a `+` marker in `git
+//!   branch`) are dropped because you cannot `git checkout` them while
+//!   they're checked out elsewhere — they're surfaced in the worktree chip
+//!   instead.
+//! - **Worktree chip** (`ContextChipKind::ShellGitWorktree`) lists every
+//!   worktree (including the main one), parsed from `git worktree list
+//!   --porcelain`. Clicking one runs `cd <path>` in the active pane.
+//!
+//! The two chips run their own shell commands (see `builtins.rs`), so each
+//! filter here parses the output of exactly one git invocation.
 
 const ENCODED_VALUE_SEPARATOR: char = '\u{1f}';
-const WORKTREE_TAG: &str = "worktree";
+const WORKTREE_BRANCH_TAG: &str = "branch";
 const GIT_BRANCH_REF_PREFIX: &str = "refs/heads/";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GitBranchOnClickValue {
     pub(crate) branch_name: String,
-    pub(crate) worktree_path: Option<String>,
-    pub(crate) is_linked_worktree: bool,
 }
 
 impl GitBranchOnClickValue {
     pub(crate) fn new(branch_name: String) -> Self {
-        Self {
-            branch_name,
-            worktree_path: None,
-            is_linked_worktree: false,
-        }
-    }
-
-    fn linked_worktree(branch_name: String, worktree_path: Option<String>) -> Self {
-        Self {
-            branch_name,
-            worktree_path,
-            is_linked_worktree: true,
-        }
+        Self { branch_name }
     }
 
     pub(crate) fn encode(&self) -> String {
-        if self.is_linked_worktree {
-            match &self.worktree_path {
-                Some(path) => format!(
-                    "{}{ENCODED_VALUE_SEPARATOR}{WORKTREE_TAG}{ENCODED_VALUE_SEPARATOR}{path}",
-                    self.branch_name
-                ),
-                None => format!(
-                    "{}{ENCODED_VALUE_SEPARATOR}{WORKTREE_TAG}",
-                    self.branch_name
-                ),
-            }
-        } else {
-            self.branch_name.clone()
+        self.branch_name.clone()
+    }
+
+    pub(crate) fn decode(value: &str) -> Self {
+        // For forward-compat with payloads emitted by older builds that
+        // bundled worktree metadata into the branch chip, drop anything
+        // after the encoded-value separator.
+        let branch_name = value
+            .split(ENCODED_VALUE_SEPARATOR)
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        Self::new(branch_name)
+    }
+}
+
+/// Click-action payload for the worktree chip. The path is what `cd`
+/// targets; the branch (if any) and short label are used to render the
+/// menu item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GitWorktreeOnClickValue {
+    pub(crate) path: String,
+    pub(crate) branch_name: Option<String>,
+}
+
+impl GitWorktreeOnClickValue {
+    pub(crate) fn new(path: String, branch_name: Option<String>) -> Self {
+        Self { path, branch_name }
+    }
+
+    /// Last segment of the worktree path (or the full path if it has none).
+    /// Mirrors what users see in their shell prompt's `pwd`.
+    pub(crate) fn display_name(&self) -> &str {
+        self.path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.path)
+    }
+
+    pub(crate) fn encode(&self) -> String {
+        match &self.branch_name {
+            Some(branch) => format!(
+                "{}{ENCODED_VALUE_SEPARATOR}{WORKTREE_BRANCH_TAG}{ENCODED_VALUE_SEPARATOR}{branch}",
+                self.path
+            ),
+            None => self.path.clone(),
         }
     }
 
     pub(crate) fn decode(value: &str) -> Self {
         let mut parts = value.splitn(3, ENCODED_VALUE_SEPARATOR);
-        let branch_name = parts.next().unwrap_or_default().to_string();
-
-        match parts.next() {
-            Some(WORKTREE_TAG) => {
-                let worktree_path = parts
-                    .next()
-                    .filter(|path| !path.is_empty())
-                    .map(str::to_string);
-                Self::linked_worktree(branch_name, worktree_path)
-            }
-            _ => Self::new(branch_name),
-        }
+        let path = parts.next().unwrap_or_default().to_string();
+        let branch_name = match parts.next() {
+            Some(WORKTREE_BRANCH_TAG) => parts.next().filter(|s| !s.is_empty()).map(str::to_string),
+            _ => None,
+        };
+        Self::new(path, branch_name)
     }
 }
 
@@ -70,23 +97,19 @@ struct ParsedGitBranchLine {
     is_linked_worktree: bool,
 }
 
+/// Filter the output of `git --no-optional-locks branch --no-color
+/// --sort=-committerdate` into the encoded click values shown in the
+/// branch chip's dropdown. Linked-worktree entries (marked with `+`) are
+/// dropped — they cannot be `git checkout`'d, and the worktree chip
+/// surfaces them by path.
 pub(crate) fn filter_git_branch_on_click_values(
     values_opt: Option<Vec<String>>,
 ) -> Option<Vec<String>> {
     values_opt.map(|values| {
-        let worktree_list_separator_index = values
-            .iter()
-            .position(|value| value.trim() == WORKTREE_LIST_SEPARATOR);
-
-        let (branch_lines, worktree_lines) = match worktree_list_separator_index {
-            Some(index) => (&values[..index], &values[index + 1..]),
-            None => (&values[..], &[][..]),
-        };
-
-        let branch_to_worktree_path = parse_git_worktree_paths(worktree_lines);
-        let branches: Vec<ParsedGitBranchLine> = branch_lines
+        let branches: Vec<ParsedGitBranchLine> = values
             .iter()
             .filter_map(|line| parse_git_branch_line(line))
+            .filter(|branch| !branch.is_linked_worktree)
             .collect();
 
         // Keep the current branch first (denoted by *), preserving relative order
@@ -97,18 +120,52 @@ pub(crate) fn filter_git_branch_on_click_values(
         current_branches
             .into_iter()
             .chain(other_branches)
-            .map(|branch| {
-                if branch.is_linked_worktree {
-                    GitBranchOnClickValue::linked_worktree(
-                        branch.branch_name.clone(),
-                        branch_to_worktree_path.get(&branch.branch_name).cloned(),
-                    )
-                } else {
-                    GitBranchOnClickValue::new(branch.branch_name)
-                }
-                .encode()
-            })
+            .map(|branch| GitBranchOnClickValue::new(branch.branch_name).encode())
             .collect()
+    })
+}
+
+/// Filter the output of `git --no-optional-locks worktree list
+/// --porcelain` into encoded click values for the worktree chip.
+/// Worktrees are returned in the order git emits them (main first).
+pub(crate) fn filter_git_worktree_on_click_values(
+    values_opt: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    values_opt.map(|values| {
+        let mut entries: Vec<GitWorktreeOnClickValue> = Vec::new();
+        let mut current_path: Option<String> = None;
+        let mut current_branch: Option<String> = None;
+
+        let mut flush = |path: &mut Option<String>, branch: &mut Option<String>| {
+            if let Some(path) = path.take() {
+                entries.push(GitWorktreeOnClickValue::new(path, branch.take()));
+            } else {
+                // Discard the branch if we never saw a path (shouldn't happen
+                // for well-formed porcelain output, but be defensive).
+                branch.take();
+            }
+        };
+
+        for line in values {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                flush(&mut current_path, &mut current_branch);
+                continue;
+            }
+            if let Some(path) = trimmed.strip_prefix("worktree ") {
+                flush(&mut current_path, &mut current_branch);
+                current_path = Some(path.to_string());
+            } else if let Some(branch_ref) = trimmed.strip_prefix("branch ") {
+                current_branch = branch_ref
+                    .strip_prefix(GIT_BRANCH_REF_PREFIX)
+                    .map(str::to_string);
+            }
+            // Other porcelain attributes (HEAD, detached, bare, locked, …)
+            // are not needed for the click action.
+        }
+        flush(&mut current_path, &mut current_branch);
+
+        entries.into_iter().map(|entry| entry.encode()).collect()
     })
 }
 
@@ -146,39 +203,6 @@ fn parse_git_branch_line(line: &str) -> Option<ParsedGitBranchLine> {
     })
 }
 
-fn parse_git_worktree_paths(lines: &[String]) -> HashMap<String, String> {
-    let mut branch_to_worktree_path = HashMap::new();
-    let mut current_worktree_path: Option<String> = None;
-
-    for line in lines {
-        let trimmed = line.trim();
-
-        if trimmed.is_empty() {
-            current_worktree_path = None;
-            continue;
-        }
-
-        if let Some(path) = trimmed.strip_prefix("worktree ") {
-            current_worktree_path = Some(path.to_string());
-            continue;
-        }
-
-        let Some(branch_ref) = trimmed.strip_prefix("branch ") else {
-            continue;
-        };
-        let Some(branch_name) = branch_ref.strip_prefix(GIT_BRANCH_REF_PREFIX) else {
-            continue;
-        };
-        let Some(path) = current_worktree_path.as_ref() else {
-            continue;
-        };
-
-        branch_to_worktree_path.insert(branch_name.to_string(), path.clone());
-    }
-
-    branch_to_worktree_path
-}
-
 /// Returns `true` when `name` looks like a plausible git branch name that can
 /// be created via `git checkout -b`.
 ///
@@ -211,25 +235,18 @@ mod tests {
 
     #[test]
     fn test_git_branch_on_click_value_round_trips_through_encode_decode() {
-        let values = [
-            GitBranchOnClickValue::new("feature-a".to_string()),
-            GitBranchOnClickValue::linked_worktree(
-                "feature-b".to_string(),
-                Some("/repo/feature-b".to_string()),
-            ),
-            GitBranchOnClickValue::linked_worktree("feature-c".to_string(), None),
-        ];
-
-        for value in values {
-            assert_eq!(GitBranchOnClickValue::decode(&value.encode()), value);
-        }
+        let value = GitBranchOnClickValue::new("feature-a".to_string());
+        assert_eq!(GitBranchOnClickValue::decode(&value.encode()), value);
     }
 
     #[test]
-    fn test_git_branch_on_click_value_decode_uses_branch_name_for_unknown_payload() {
-        let value =
-            format!("feature-a{ENCODED_VALUE_SEPARATOR}unknown{ENCODED_VALUE_SEPARATOR}metadata");
-
+    fn test_git_branch_on_click_value_decode_strips_legacy_worktree_metadata() {
+        // Older builds packed worktree metadata after the encoded-value
+        // separator. New code stores worktrees in a separate chip; if we
+        // see a legacy payload we should still produce a valid branch name.
+        let value = format!(
+            "feature-a{ENCODED_VALUE_SEPARATOR}worktree{ENCODED_VALUE_SEPARATOR}/repo/feature-a"
+        );
         assert_eq!(
             GitBranchOnClickValue::decode(&value),
             GitBranchOnClickValue::new("feature-a".to_string())
@@ -237,50 +254,83 @@ mod tests {
     }
 
     #[test]
-    fn test_git_branch_on_click_values_resolve_linked_worktree_paths() {
+    fn test_filter_git_branch_on_click_values_drops_linked_worktrees() {
+        // `+` marks a branch that's checked out in another worktree.
+        // It should not appear in the branch chip; the worktree chip
+        // surfaces it instead.
         let values = Some(vec![
             "  feature-a".to_string(),
             "+ linked-worktree".to_string(),
             "* main".to_string(),
-            "".to_string(),
             "  +literal-plus".to_string(),
-            WORKTREE_LIST_SEPARATOR.to_string(),
-            "worktree /repo".to_string(),
-            "branch refs/heads/main".to_string(),
-            "".to_string(),
-            "worktree /repo-linked".to_string(),
-            "branch refs/heads/linked-worktree".to_string(),
         ]);
-
         let values = filter_git_branch_on_click_values(values).unwrap();
         let values: Vec<_> = values
             .iter()
             .map(|value| GitBranchOnClickValue::decode(value))
             .collect();
-
         assert_eq!(
             values,
             vec![
                 GitBranchOnClickValue::new("main".to_string()),
                 GitBranchOnClickValue::new("feature-a".to_string()),
-                GitBranchOnClickValue::linked_worktree(
-                    "linked-worktree".to_string(),
-                    Some("/repo-linked".to_string()),
-                ),
+                // `+literal-plus` has no whitespace after `+`, so it's not
+                // parsed as a worktree marker — it stays as a branch.
                 GitBranchOnClickValue::new("+literal-plus".to_string()),
             ]
         );
     }
 
     #[test]
-    fn test_git_branch_on_click_values_keep_linked_marker_without_path() {
-        let values = filter_git_branch_on_click_values(Some(vec!["+ feature".to_string()]))
-            .expect("expected parsed branch values");
-        let value = GitBranchOnClickValue::decode(&values[0]);
+    fn test_filter_git_worktree_on_click_values_parses_porcelain() {
+        let values = Some(vec![
+            "worktree /repo".to_string(),
+            "HEAD abcd1234".to_string(),
+            "branch refs/heads/main".to_string(),
+            "".to_string(),
+            "worktree /repo/.worktrees/feature".to_string(),
+            "HEAD 5678efff".to_string(),
+            "branch refs/heads/feature".to_string(),
+            "".to_string(),
+            "worktree /repo/.worktrees/detached".to_string(),
+            "HEAD 99999999".to_string(),
+            "detached".to_string(),
+        ]);
+        let values = filter_git_worktree_on_click_values(values).unwrap();
+        let values: Vec<_> = values
+            .iter()
+            .map(|value| GitWorktreeOnClickValue::decode(value))
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                GitWorktreeOnClickValue::new("/repo".to_string(), Some("main".to_string())),
+                GitWorktreeOnClickValue::new(
+                    "/repo/.worktrees/feature".to_string(),
+                    Some("feature".to_string())
+                ),
+                // Detached HEAD worktree: no branch ref.
+                GitWorktreeOnClickValue::new("/repo/.worktrees/detached".to_string(), None),
+            ]
+        );
+    }
 
-        assert_eq!(value.branch_name, "feature");
-        assert_eq!(value.worktree_path, None);
-        assert!(value.is_linked_worktree);
+    #[test]
+    fn test_git_worktree_on_click_value_round_trips_with_and_without_branch() {
+        for value in [
+            GitWorktreeOnClickValue::new("/repo".to_string(), Some("main".to_string())),
+            GitWorktreeOnClickValue::new("/tmp/detached".to_string(), None),
+        ] {
+            assert_eq!(GitWorktreeOnClickValue::decode(&value.encode()), value);
+        }
+    }
+
+    #[test]
+    fn test_git_worktree_display_name_uses_basename() {
+        let with_trailing = GitWorktreeOnClickValue::new("/repo/feature/".to_string(), None);
+        assert_eq!(with_trailing.display_name(), "feature");
+        let root = GitWorktreeOnClickValue::new("/".to_string(), None);
+        assert_eq!(root.display_name(), "/");
     }
 
     #[test]

@@ -355,6 +355,7 @@ impl CurrentPrompt {
         log::debug!("Updating prompt on_click value of {chip_kind:?} to {value:?}");
         let filter_values = match chip_kind {
             ContextChipKind::ShellGitBranch => self.filter_git_branch_on_click_values(value),
+            ContextChipKind::ShellGitWorktree => self.filter_git_worktree_on_click_values(value),
             _ => value,
         };
         if let Some(state) = self.states.get_mut(chip_kind) {
@@ -632,6 +633,13 @@ impl CurrentPrompt {
         values_opt: Option<Vec<String>>,
     ) -> Option<Vec<String>> {
         super::git_branch_on_click::filter_git_branch_on_click_values(values_opt)
+    }
+
+    fn filter_git_worktree_on_click_values(
+        &self,
+        values_opt: Option<Vec<String>>,
+    ) -> Option<Vec<String>> {
+        super::git_branch_on_click::filter_git_worktree_on_click_values(values_opt)
     }
 
     /// Perform a single update of the given chip.

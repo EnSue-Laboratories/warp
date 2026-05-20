@@ -147,14 +147,51 @@ pub fn shell_git_branch() -> ShellCommandGenerator {
 }
 
 pub fn shell_other_git_branches() -> ShellCommandGenerator {
-    const SH_COMMAND: &str = "git --no-optional-locks branch --no-color --sort=-committerdate; \
-        printf '\\036\\n'; \
-        git --no-optional-locks worktree list --porcelain";
+    // Only branches. Worktrees live in a separate chip (`ShellGitWorktree`)
+    // with its own generator (`shell_other_git_worktrees`).
+    const SH_COMMAND: &str = "git --no-optional-locks branch --no-color --sort=-committerdate";
+    let pwsh_command =
+        safe_git_powershell("git --no-optional-locks branch --no-color --sort=-committerdate");
+
+    let command = ShellCommand::shell_specific([
+        (ShellType::PowerShell, pwsh_command),
+        (ShellType::Bash, SH_COMMAND.to_string()),
+        (ShellType::Zsh, SH_COMMAND.to_string()),
+        (ShellType::Fish, SH_COMMAND.to_string()),
+    ]);
+
+    ShellCommandGenerator::new(command, Some(vec!["git".to_owned()]))
+}
+
+/// Generator for the worktree chip's current-state text — the basename of
+/// the active worktree (matches what shell prompts typically show).
+pub fn shell_git_worktree() -> ShellCommandGenerator {
+    // `git rev-parse --show-toplevel` is the worktree root; `basename`
+    // gives the dir name. Falls back silently when not in a git repo.
+    const SH_COMMAND: &str = "_top=$(GIT_OPTIONAL_LOCKS=0 git rev-parse --show-toplevel \
+         2>/dev/null) && printf '%s' \"${_top##*/}\"";
     let pwsh_command = safe_git_powershell(
-        "git --no-optional-locks branch --no-color --sort=-committerdate; \
-        [char]30; \
-        git --no-optional-locks worktree list --porcelain",
+        "$top = git rev-parse --show-toplevel 2>$null; \
+            if ($? -eq $true -and $top) { \
+                Split-Path -Leaf $top; \
+            }",
     );
+
+    let command = ShellCommand::shell_specific([
+        (ShellType::PowerShell, pwsh_command),
+        (ShellType::Bash, SH_COMMAND.to_string()),
+        (ShellType::Zsh, SH_COMMAND.to_string()),
+        (ShellType::Fish, SH_COMMAND.to_string()),
+    ]);
+
+    ShellCommandGenerator::new(command, Some(vec!["git".to_owned()]))
+}
+
+/// Generator for the worktree chip's click-list — porcelain output of
+/// `git worktree list`, parsed by `filter_git_worktree_on_click_values`.
+pub fn shell_other_git_worktrees() -> ShellCommandGenerator {
+    const SH_COMMAND: &str = "git --no-optional-locks worktree list --porcelain";
+    let pwsh_command = safe_git_powershell("git --no-optional-locks worktree list --porcelain");
 
     let command = ShellCommand::shell_specific([
         (ShellType::PowerShell, pwsh_command),
