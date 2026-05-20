@@ -7723,6 +7723,17 @@ impl PaneGroup {
             .map(|session| session.terminal_manager(app))
     }
 
+    /// Look up a pane's [`TerminalManager`] by [`PaneId`]. Used by the
+    /// control-socket surface to drive raw PTY input.
+    pub fn terminal_manager_by_id(
+        &self,
+        pane_id: impl Into<PaneId>,
+        app: &AppContext,
+    ) -> Option<ModelHandle<Box<dyn TerminalManager>>> {
+        self.terminal_session_by_id(pane_id)
+            .map(|session| session.terminal_manager(app))
+    }
+
     // When user clicked on the close tab button, we should wind down the existing panes
     // by deleting all the saved blocks in each pane from the database.
     pub fn clean_up_panes(&self, ctx: &mut ViewContext<Self>) {

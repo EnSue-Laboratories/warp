@@ -120,6 +120,8 @@ pub(super) enum CliTelemetryEvent {
     HarnessSupportFinishTask { success: bool },
     /// Executing `warp harness-support report-shutdown`
     HarnessSupportReportShutdown,
+    /// Executing any `warp control …` subcommand.
+    ControlExecute { action: &'static str },
 }
 
 impl TelemetryEvent for CliTelemetryEvent {
@@ -200,6 +202,7 @@ impl TelemetryEvent for CliTelemetryEvent {
                 Some(json!({ "success": success }))
             }
             CliTelemetryEvent::HarnessSupportReportShutdown => None,
+            CliTelemetryEvent::ControlExecute { action } => Some(json!({ "action": action })),
         }
     }
 
@@ -292,6 +295,7 @@ impl TelemetryEventDesc for CliTelemetryEventDiscriminants {
             CliTelemetryEventDiscriminants::HarnessSupportReportShutdown => {
                 "CLI.Execute.HarnessSupport.ReportShutdown"
             }
+            CliTelemetryEventDiscriminants::ControlExecute => "CLI.Execute.Control",
         }
     }
 
@@ -419,6 +423,9 @@ impl TelemetryEventDesc for CliTelemetryEventDiscriminants {
             }
             CliTelemetryEventDiscriminants::HarnessSupportReportShutdown => {
                 "Reported agent shutdown via harness-support from the Warp CLI"
+            }
+            CliTelemetryEventDiscriminants::ControlExecute => {
+                "Issued a control command to a running Warp instance from the Warp CLI"
             }
         }
     }

@@ -18,9 +18,13 @@ mod cloud_object;
 mod code;
 mod code_review;
 mod coding_entrypoints;
+#[cfg(unix)]
+mod cli_control;
 mod coding_panel_enablement_state;
 mod command_palette;
 mod completer;
+#[cfg(unix)]
+mod control_server;
 #[allow(dead_code)]
 mod context_chips;
 #[cfg(enable_crash_recovery)]
@@ -723,6 +727,23 @@ pub fn run() -> Result<()> {
                 return warp_cli::completions::generate_to_stdout(*shell);
             }
             warp_cli::Command::CommandLine(cmd) => {
+                // Fast path: `warp control …` is a pure socket client and
+                // doesn't need an AppContext. Bypass `run_internal` entirely
+                // — otherwise every CLI invocation spins up a full GUI app
+                // context (incl. a terminal-server subprocess and a second
+                // `control_server::launch` that collides on the socket).
+                if let warp_cli::CliCommand::Control(control_cmd) = cmd.as_ref() {
+                    #[cfg(unix)]
+                    return crate::cli_control::run_standalone(control_cmd.clone());
+                    #[cfg(not(unix))]
+                    {
+                        let _ = control_cmd;
+                        return Err(anyhow::anyhow!(
+                            "`warp control` is only available on Unix targets"
+                        ));
+                    }
+                }
+
                 let (is_sandboxed, computer_use_override) = match cmd.as_ref() {
                     warp_cli::CliCommand::Agent(warp_cli::agent::AgentCommand::Run(run_args)) => (
                         run_args.sandboxed,
@@ -1388,6 +1409,15 @@ pub(crate) fn initialize_app(
     #[cfg(target_os = "macos")]
     if !launch_mode.is_headless() {
         AppearanceManager::as_ref(ctx).set_app_icon(ctx);
+    }
+
+    // Bring up the control socket for `warp control …`. Gated so headless
+    // CLI and worker subprocesses don't accidentally try to bind. The
+    // implementation uses Unix-domain sockets; on non-Unix targets the
+    // control surface is simply unavailable.
+    #[cfg(unix)]
+    if !launch_mode.is_headless() {
+        control_server::launch(ctx);
     }
 
     #[cfg(feature = "local_tty")]

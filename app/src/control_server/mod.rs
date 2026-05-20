@@ -1,0 +1,767 @@
+//! In-process control surface for a running Warp GUI instance.
+//!
+//! Binds a per-app Unix domain socket and serves a JSON-RPC protocol that
+//! mirrors the `warp control …` CLI surface (see `crate::cli_control` and
+//! `warp_cli::control`). All session/pane/block state lives in the UI
+//! process's `warpui` Entity model, so RPC handlers hop onto the main thread
+//! via the spawner before reading/writing state.
+//!
+//! Modeled on `crate::remote_server::unix::launch_daemon`. See `CLAUDE.md`
+//! ("Warp-as-CLI" section) for design rationale.
+
+pub mod framing;
+pub mod wire;
+
+use std::path::PathBuf;
+
+use futures::io::{BufReader, BufWriter};
+use futures::AsyncReadExt as _;
+use warpui::{AppContext, Entity, EntityId, SingletonEntity, ViewHandle};
+
+use crate::terminal::view::TerminalView;
+use warpui::TypedActionView;
+
+use crate::pane_group::{PaneGroup, PaneGroupAction};
+use crate::pane_group::tree::Direction as PaneDirection;
+use crate::workspace::action::WorkspaceAction;
+use crate::workspace::registry::WorkspaceRegistry;
+use crate::workspace::view::Workspace;
+use wire::{BlockEntry, PaneSummary, Request, Response, SplitDir, TabSummary};
+
+/// Singleton model that owns the control socket task.
+pub struct ControlModel;
+
+impl Entity for ControlModel {
+    type Event = ();
+}
+
+impl SingletonEntity for ControlModel {}
+
+/// Path used by both the server (for `bind`) and the client (for `connect`).
+pub fn socket_path() -> PathBuf {
+    let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
+    base.join("dev.warp.WarpOss").join("control.sock")
+}
+
+/// Bind the control socket and start serving requests. Called from
+/// `run_internal` only when `LaunchMode::App` is active so headless CLI
+/// invocations don't try to bind.
+pub fn launch(ctx: &mut AppContext) {
+    let path = socket_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::warn!("control_server: failed to create {parent:?}: {e}");
+            return;
+        }
+    }
+    if path.exists() {
+        // Stale socket from a previous run (or another instance still alive).
+        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+            log::info!(
+                "control_server: another Warp instance owns {}; not binding",
+                path.display()
+            );
+            return;
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    let listener = match std::os::unix::net::UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("control_server: failed to bind {}: {e}", path.display());
+            return;
+        }
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    listener.set_nonblocking(true).ok();
+    log::info!("control_server: listening on {}", path.display());
+
+    ctx.add_singleton_model(move |ctx| {
+        let spawner = ctx.spawner();
+        let exec = ctx.background_executor();
+        let exec_clone = exec.clone();
+
+        exec.spawn(async move {
+            let listener = match async_io::Async::new(listener) {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!("control_server: async listener init failed: {e}");
+                    return;
+                }
+            };
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        let spawner = spawner.clone();
+                        exec_clone
+                            .spawn(handle_connection(stream, spawner))
+                            .detach();
+                    }
+                    Err(e) => log::error!("control_server: accept error: {e}"),
+                }
+            }
+        })
+        .detach();
+
+        ControlModel
+    });
+}
+
+async fn handle_connection(
+    stream: async_io::Async<std::os::unix::net::UnixStream>,
+    spawner: warpui::ModelSpawner<ControlModel>,
+) {
+    let (read_half, write_half) = stream.split();
+    let mut reader = BufReader::new(read_half);
+    let mut writer = BufWriter::new(write_half);
+
+    let request: Request = match framing::read_frame(&mut reader).await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = framing::write_frame(
+                &mut writer,
+                &Response::Error {
+                    message: format!("invalid request: {e}"),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+
+    let response = spawner
+        .spawn(move |_me, ctx| dispatch(request, ctx))
+        .await
+        .unwrap_or_else(|_| Response::Error {
+            message: "control_server: dispatch dropped (model gone)".into(),
+        });
+
+    if let Err(e) = framing::write_frame(&mut writer, &response).await {
+        log::warn!("control_server: write response failed: {e}");
+    }
+}
+
+fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
+    match request {
+        Request::Ping => Response::Pong,
+        Request::ListTabs => handle_list_tabs(ctx),
+        Request::ListPanes { tab } => handle_list_panes(tab, ctx),
+        Request::SendInput { pane, text } => handle_send_input(pane, text, ctx),
+        Request::ReadPane { pane, blocks } => handle_read_pane(pane, blocks, ctx),
+        Request::NewTab => handle_new_tab(ctx),
+        Request::CloseTab { tab } => handle_close_tab(tab, ctx),
+        Request::ListBlocks { pane, limit } => handle_list_blocks(pane, limit, ctx),
+        Request::SplitPane { pane, direction } => handle_split_pane(pane, direction, ctx),
+        Request::FocusTab { tab } => handle_focus_tab(tab, ctx),
+        Request::FocusPane { pane } => handle_focus_pane(pane, ctx),
+        Request::ClosePane { pane } => handle_close_pane(pane, ctx),
+        Request::ReadBlock { block } => handle_read_block(block, ctx),
+        Request::WriteBytes { pane, bytes } => handle_write_bytes(pane, bytes, ctx),
+        Request::Keystroke { pane, key } => handle_keystroke(pane, key, ctx),
+    }
+}
+
+// -------- helpers ----------------------------------------------------------
+
+fn entity_id_to_u64(id: EntityId) -> u64 {
+    // EntityId implements Display as its inner usize — round-trip via string.
+    id.to_string().parse::<u64>().unwrap_or(0)
+}
+
+/// Return the Workspace control commands should target.
+///
+/// Prefer the frontmost Warp window (matches `crate::root_view::active_workspace`),
+/// so multi-window users don't see commands hit an arbitrary workspace
+/// (the `WorkspaceRegistry` HashMap iterates in arbitrary order).
+///
+/// When no Warp window is frontmost — the common case when invoking the
+/// CLI from another terminal — fall back to any registered workspace,
+/// since callers still expect *some* sensible target. With a single Warp
+/// instance running, this is unambiguous; with multiple, the user can
+/// focus the desired window first to disambiguate.
+fn active_workspace(ctx: &AppContext) -> Option<ViewHandle<Workspace>> {
+    if let Some(window_id) = ctx.windows().active_window() {
+        if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(window_id, ctx) {
+            return Some(ws);
+        }
+    }
+    WorkspaceRegistry::as_ref(ctx)
+        .all_workspaces(ctx)
+        .into_iter()
+        .map(|(_, ws)| ws)
+        .next()
+}
+
+/// Find the `ViewHandle<TerminalView>` for a wire pane id. Wire ids are the
+/// `EntityId` of the terminal view (matching what `list_tab_pane_groups`
+/// returns in `terminal_ids`), so we iterate panes and compare ids.
+fn lookup_terminal_view(wire_pane_id: u64, ctx: &AppContext) -> Option<ViewHandle<TerminalView>> {
+    let workspace = active_workspace(ctx)?;
+    let ws = workspace.as_ref(ctx);
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        let pane_ids: Vec<_> = pg.terminal_pane_ids().collect();
+        for pid in pane_ids {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                if entity_id_to_u64(view.id()) == wire_pane_id {
+                    return Some(view);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The default pane for commands that omit `--pane`: the focused pane of the
+/// active tab. Falls back to the first terminal pane in the active tab, then
+/// to the first terminal pane overall.
+fn first_pane_wire_id(ctx: &AppContext) -> Option<u64> {
+    let workspace = active_workspace(ctx)?;
+    let ws = workspace.as_ref(ctx);
+    let active_idx = ws.active_tab_index();
+    if let Some(active_tab) = ws.tabs.get(active_idx) {
+        let pg = active_tab.pane_group.as_ref(ctx);
+        let focused = pg.focused_pane_id(ctx);
+        if let Some(view) = pg.terminal_view_from_pane_id(focused, ctx) {
+            return Some(entity_id_to_u64(view.id()));
+        }
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                return Some(entity_id_to_u64(view.id()));
+            }
+        }
+    }
+    let groups = ws.list_tab_pane_groups(ctx);
+    let first = groups.first()?;
+    let term = first.terminal_ids.first()?;
+    Some(entity_id_to_u64(*term))
+}
+
+// -------- handlers ---------------------------------------------------------
+
+fn handle_list_tabs(ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Tabs { tabs: vec![] };
+    };
+    let ws = workspace.as_ref(ctx);
+    let active_idx = ws.active_tab_index();
+    let mut tabs = Vec::new();
+    for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+        let pg = tab.pane_group.as_ref(ctx);
+        let pane_ids: Vec<u64> = visible_terminal_views(pg, ctx)
+            .into_iter()
+            .map(|view| entity_id_to_u64(view.id()))
+            .collect();
+        tabs.push(TabSummary {
+            id: entity_id_to_u64(tab.pane_group.id()),
+            index: tab_idx,
+            title: None,
+            active: tab_idx == active_idx,
+            pane_ids,
+        });
+    }
+    Response::Tabs { tabs }
+}
+
+/// `PaneGroup::terminal_pane_ids` still returns panes that are hidden for
+/// close (the undo-close machinery keeps them in `pane_contents`).
+/// Filter those out so list responses match what the user sees.
+fn visible_terminal_views(
+    pg: &PaneGroup,
+    ctx: &AppContext,
+) -> Vec<ViewHandle<TerminalView>> {
+    pg.terminal_pane_ids()
+        .filter(|pid| !pg.is_pane_hidden_for_close(*pid))
+        .filter_map(|pid| pg.terminal_view_from_pane_id(pid, ctx))
+        .collect()
+}
+
+fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Panes { panes: vec![] };
+    };
+    let ws = workspace.as_ref(ctx);
+    let active_idx = ws.active_tab_index();
+    let mut panes = Vec::new();
+    for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+        let tab_id = entity_id_to_u64(tab.pane_group.id());
+        if let Some(want) = filter_tab {
+            if want != tab_id && want != tab_idx as u64 {
+                continue;
+            }
+        }
+        let pg = tab.pane_group.as_ref(ctx);
+        let focused_pid = pg.focused_pane_id(ctx);
+        let focused_view_id = pg
+            .terminal_view_from_pane_id(focused_pid, ctx)
+            .map(|v| entity_id_to_u64(v.id()));
+        for view in visible_terminal_views(pg, ctx) {
+            let wire_id = entity_id_to_u64(view.id());
+            let cwd = view.as_ref(ctx).pwd();
+            let is_focused = tab_idx == active_idx && focused_view_id == Some(wire_id);
+            panes.push(PaneSummary {
+                id: wire_id,
+                tab_id,
+                tab_index: tab_idx,
+                title: None,
+                cwd,
+                focused: is_focused,
+            });
+        }
+    }
+    Response::Panes { panes }
+}
+
+fn handle_send_input(pane: Option<u64>, text: String, ctx: &mut AppContext) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let Some(view_handle) = lookup_terminal_view(pane_wire, ctx) else {
+        return Response::Error {
+            message: format!("pane {pane_wire} not found"),
+        };
+    };
+    view_handle.update(ctx, |view, ctx| {
+        view.execute_command_or_set_pending(&text, ctx);
+    });
+    Response::Ok
+}
+
+fn handle_read_pane(pane: Option<u64>, blocks: usize, ctx: &mut AppContext) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let Some(view_handle) = lookup_terminal_view(pane_wire, ctx) else {
+        return Response::Error {
+            message: format!("pane {pane_wire} not found"),
+        };
+    };
+    let entries = view_handle.update(ctx, |view, _ctx| {
+        let model = view.model.lock();
+        let block_list = model.block_list();
+        let all = block_list.blocks();
+        let take = blocks.min(all.len());
+        let start = all.len().saturating_sub(take);
+        all[start..]
+            .iter()
+            .map(|b| block_to_entry(b, pane_wire))
+            .collect::<Vec<_>>()
+    });
+    Response::PaneOutput {
+        pane: pane_wire,
+        blocks: entries,
+    }
+}
+
+fn block_to_entry(b: &crate::terminal::model::block::Block, pane_wire: u64) -> BlockEntry {
+    let command = b
+        .prompt_and_command_grid()
+        .contents_to_string(false, None);
+    let command = if command.trim().is_empty() {
+        None
+    } else {
+        Some(command)
+    };
+    let output = b.output_grid().contents_to_string(false, None);
+    BlockEntry {
+        id: b.id().to_string(),
+        pane_id: pane_wire,
+        command,
+        output,
+        exit_code: Some(b.exit_code().value()),
+        pwd: b.pwd().cloned(),
+        started_at: None,
+        completed_at: None,
+    }
+}
+
+fn handle_list_blocks(pane: Option<u64>, limit: usize, ctx: &mut AppContext) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let Some(view_handle) = lookup_terminal_view(pane_wire, ctx) else {
+        return Response::Error {
+            message: format!("pane {pane_wire} not found"),
+        };
+    };
+    let entries = view_handle.update(ctx, |view, _ctx| {
+        let model = view.model.lock();
+        let block_list = model.block_list();
+        let all = block_list.blocks();
+        let take = limit.min(all.len());
+        let start = all.len().saturating_sub(take);
+        all[start..]
+            .iter()
+            .map(|b| block_to_entry(b, pane_wire))
+            .collect::<Vec<_>>()
+    });
+    Response::Blocks { blocks: entries }
+}
+
+fn handle_split_pane(
+    pane: Option<u64>,
+    direction: SplitDir,
+    ctx: &mut AppContext,
+) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let Some(pane_group) = pane_group_for_pane(pane_wire, ctx) else {
+        return Response::Error {
+            message: format!("pane {pane_wire} not found"),
+        };
+    };
+    let dir = match direction {
+        SplitDir::Left => PaneDirection::Left,
+        SplitDir::Right => PaneDirection::Right,
+        SplitDir::Up => PaneDirection::Up,
+        SplitDir::Down => PaneDirection::Down,
+    };
+    // `PaneGroup::add_terminal_pane` uses `focused_pane_id` as the split
+    // source, so to honor `--pane <id>` we have to focus the requested pane
+    // first.
+    let target = EntityId::from_usize(pane_wire as usize);
+    pane_group.update(ctx, |pg, ctx| {
+        pg.handle_action(&PaneGroupAction::FocusTerminalView(target), ctx);
+        pg.handle_action(&PaneGroupAction::Add(dir), ctx);
+    });
+    Response::Ok
+}
+
+fn handle_focus_tab(tab: u64, ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    let groups = workspace.as_ref(ctx).list_tab_pane_groups(ctx);
+    let index = groups.iter().find_map(|tpg| {
+        if entity_id_to_u64(tpg.pane_group_id) == tab || tpg.tab_idx as u64 == tab {
+            Some(tpg.tab_idx)
+        } else {
+            None
+        }
+    });
+    let Some(index) = index else {
+        return Response::Error {
+            message: format!("tab {tab} not found"),
+        };
+    };
+    workspace.update(ctx, |ws, ctx| {
+        ws.handle_action(&WorkspaceAction::ActivateTab(index), ctx);
+    });
+    Response::Ok
+}
+
+fn handle_focus_pane(pane: u64, ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    // Find the tab index containing this pane so we can activate the tab
+    // before focusing the pane inside it. Otherwise focusing a pane in a
+    // background tab just shuffles hidden state.
+    let target = EntityId::from_usize(pane as usize);
+    let mut owner_tab_idx: Option<usize> = None;
+    let mut owner_pane_group: Option<warpui::ViewHandle<PaneGroup>> = None;
+    {
+        let ws = workspace.as_ref(ctx);
+        for (idx, tab) in ws.tabs.iter().enumerate() {
+            let pg = tab.pane_group.as_ref(ctx);
+            for pid in pg.terminal_pane_ids() {
+                if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                    if entity_id_to_u64(view.id()) == pane {
+                        owner_tab_idx = Some(idx);
+                        owner_pane_group = Some(tab.pane_group.clone());
+                        break;
+                    }
+                }
+            }
+            if owner_tab_idx.is_some() {
+                break;
+            }
+        }
+    }
+    let Some(idx) = owner_tab_idx else {
+        return Response::Error {
+            message: format!("pane {pane} not found"),
+        };
+    };
+    workspace.update(ctx, |ws, ctx| {
+        ws.handle_action(&WorkspaceAction::ActivateTab(idx), ctx);
+    });
+    if let Some(pg) = owner_pane_group {
+        pg.update(ctx, |pg, ctx| {
+            pg.handle_action(&PaneGroupAction::FocusTerminalView(target), ctx);
+        });
+    }
+    Response::Ok
+}
+
+fn handle_close_pane(pane: u64, ctx: &mut AppContext) -> Response {
+    // We need the `PaneId` of the pane to close — `PaneGroup::close_pane`
+    // takes a `PaneId`, not the `EntityId` we use as wire id. Find the
+    // owning PaneGroup, look up the `PaneId` whose terminal view matches
+    // our wire id, then close it without confirmation (control commands
+    // are explicit).
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    let ws = workspace.as_ref(ctx);
+    let mut found: Option<(warpui::ViewHandle<PaneGroup>, crate::pane_group::pane::PaneId)> = None;
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                if entity_id_to_u64(view.id()) == pane {
+                    found = Some((tab.pane_group.clone(), pid));
+                    break;
+                }
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let Some((pane_group, pid)) = found else {
+        return Response::Error {
+            message: format!("pane {pane} not found"),
+        };
+    };
+    pane_group.update(ctx, |pg, ctx| {
+        pg.close_pane(pid, ctx);
+    });
+    Response::Ok
+}
+
+fn handle_read_block(block_id: String, ctx: &mut AppContext) -> Response {
+    use crate::terminal::model::BlockId;
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    let needle = BlockId::from(block_id.clone());
+    let ws = workspace.as_ref(ctx);
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) else {
+                continue;
+            };
+            let pane_wire = entity_id_to_u64(view.id());
+            let entry = {
+                let model = view.as_ref(ctx).model.lock();
+                model
+                    .block_list()
+                    .block_with_id(&needle)
+                    .map(|b| block_to_entry(b, pane_wire))
+            };
+            if let Some(entry) = entry {
+                return Response::Block { block: entry };
+            }
+        }
+    }
+    Response::Error {
+        message: format!("block {block_id} not found"),
+    }
+}
+
+/// Find the `ViewHandle<PaneGroup>` that contains a given terminal pane (by
+/// wire id == TerminalView EntityId).
+fn pane_group_for_pane(
+    wire_pane_id: u64,
+    ctx: &AppContext,
+) -> Option<warpui::ViewHandle<PaneGroup>> {
+    let workspace = active_workspace(ctx)?;
+    let ws = workspace.as_ref(ctx);
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                if entity_id_to_u64(view.id()) == wire_pane_id {
+                    return Some(tab.pane_group.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn handle_write_bytes(pane: Option<u64>, bytes: Vec<u8>, ctx: &mut AppContext) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let manager = match terminal_manager_for_pane(pane_wire, ctx) {
+        Some(m) => m,
+        None => {
+            return Response::Error {
+                message: format!("pane {pane_wire} not found"),
+            }
+        }
+    };
+    manager.update(ctx, |mgr, ctx| {
+        mgr.write_pty_bytes(bytes, ctx);
+    });
+    Response::Ok
+}
+
+fn handle_keystroke(pane: Option<u64>, key: String, ctx: &mut AppContext) -> Response {
+    let Some(bytes) = keystroke_to_bytes(&key) else {
+        return Response::Error {
+            message: format!("unknown key: {key:?}"),
+        };
+    };
+    handle_write_bytes(pane, bytes, ctx)
+}
+
+/// Find the [`Box<dyn TerminalManager>`] handle for a pane id.
+fn terminal_manager_for_pane(
+    wire_pane_id: u64,
+    ctx: &AppContext,
+) -> Option<warpui::ModelHandle<Box<dyn crate::terminal::TerminalManager>>> {
+    let workspace = active_workspace(ctx)?;
+    let ws = workspace.as_ref(ctx);
+    for tab in ws.tabs.iter() {
+        let pg = tab.pane_group.as_ref(ctx);
+        for pid in pg.terminal_pane_ids() {
+            if let Some(view) = pg.terminal_view_from_pane_id(pid, ctx) {
+                if entity_id_to_u64(view.id()) == wire_pane_id {
+                    return pg.terminal_manager_by_id(pid, ctx);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Map a key name (or `ctrl-<char>` chord) to the bytes the PTY expects.
+/// Returns `None` for unknown names.
+fn keystroke_to_bytes(key: &str) -> Option<Vec<u8>> {
+    let lower = key.trim().to_ascii_lowercase();
+    let bytes: &[u8] = match lower.as_str() {
+        "enter" | "return" | "\\n" => b"\r",
+        "tab" | "\\t" => b"\t",
+        "esc" | "escape" => b"\x1b",
+        "space" => b" ",
+        "backspace" | "bs" => b"\x7f",
+        "delete" | "del" => b"\x1b[3~",
+        "ins" | "insert" => b"\x1b[2~",
+        "up" => b"\x1b[A",
+        "down" => b"\x1b[B",
+        "right" => b"\x1b[C",
+        "left" => b"\x1b[D",
+        "home" => b"\x1b[H",
+        "end" => b"\x1b[F",
+        "pageup" | "pgup" => b"\x1b[5~",
+        "pagedown" | "pgdn" => b"\x1b[6~",
+        "f1" => b"\x1bOP",
+        "f2" => b"\x1bOQ",
+        "f3" => b"\x1bOR",
+        "f4" => b"\x1bOS",
+        "f5" => b"\x1b[15~",
+        "f6" => b"\x1b[17~",
+        "f7" => b"\x1b[18~",
+        "f8" => b"\x1b[19~",
+        "f9" => b"\x1b[20~",
+        "f10" => b"\x1b[21~",
+        "f11" => b"\x1b[23~",
+        "f12" => b"\x1b[24~",
+        _ => {
+            if let Some(rest) = lower.strip_prefix("ctrl-").or_else(|| lower.strip_prefix("c-")) {
+                if rest.len() == 1 {
+                    let c = rest.as_bytes()[0];
+                    // ctrl-<letter> is the ASCII control char (0x01..=0x1A).
+                    // ctrl-space → 0x00. ctrl-[ → 0x1b (esc). ctrl-] → 0x1d.
+                    let code = match c {
+                        b'@' | b' ' => 0u8,
+                        b'a'..=b'z' => c - b'a' + 1,
+                        b'A'..=b'Z' => c - b'A' + 1,
+                        b'[' => 0x1b,
+                        b'\\' => 0x1c,
+                        b']' => 0x1d,
+                        b'^' => 0x1e,
+                        b'_' => 0x1f,
+                        b'?' => 0x7f,
+                        _ => return None,
+                    };
+                    return Some(vec![code]);
+                }
+            }
+            return None;
+        }
+    };
+    Some(bytes.to_vec())
+}
+
+fn handle_new_tab(ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    workspace.update(ctx, |ws, ctx| {
+        ws.handle_action(
+            &WorkspaceAction::AddTerminalTab {
+                hide_homepage: false,
+            },
+            ctx,
+        );
+    });
+    Response::Ok
+}
+
+fn handle_close_tab(tab: u64, ctx: &mut AppContext) -> Response {
+    let Some(workspace) = active_workspace(ctx) else {
+        return Response::Error {
+            message: "no active workspace".into(),
+        };
+    };
+    let groups = workspace.as_ref(ctx).list_tab_pane_groups(ctx);
+    let index = groups.iter().find_map(|tpg| {
+        if entity_id_to_u64(tpg.pane_group_id) == tab || tpg.tab_idx as u64 == tab {
+            Some(tpg.tab_idx)
+        } else {
+            None
+        }
+    });
+    let Some(index) = index else {
+        return Response::Error {
+            message: format!("tab {tab} not found"),
+        };
+    };
+    workspace.update(ctx, |ws, ctx| {
+        ws.handle_action(&WorkspaceAction::CloseTab(index), ctx);
+    });
+    Response::Ok
+}

@@ -42,6 +42,18 @@ pub trait TerminalManager: Any {
     fn as_any(&self) -> &dyn Any;
 
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// Writes raw bytes directly to the PTY backing this terminal. Used by
+    /// the control-socket surface (`warp control pane write` /
+    /// `warp control pane keystroke`) to drive TUI apps (vim, fzf, claude,
+    /// etc.) where the block-submission path would otherwise queue the
+    /// input for the next shell prompt instead of delivering it now.
+    ///
+    /// Default impl is a no-op; only the local-tty manager actually owns a
+    /// PTY and implements this.
+    fn write_pty_bytes(&self, bytes: Vec<u8>, app: &mut AppContext) {
+        let _ = (bytes, app);
+    }
 }
 
 impl warpui::Entity for Box<dyn TerminalManager> {

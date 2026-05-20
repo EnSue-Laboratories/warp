@@ -71,6 +71,8 @@ use crate::{
     view_components::action_button::{
         ActionButton, ActionButtonTheme, ButtonSize, KeystrokeSource, TooltipAlignment,
     },
+    view_components::DismissibleToast,
+    workspace::ToastStack,
 };
 
 use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START};
@@ -1061,6 +1063,12 @@ pub struct UseAgentToolbar {
     terminal_view_id: EntityId,
     terminal_model: Arc<FairMutex<TerminalModel>>,
 
+    // "Pane <id>" chip — click to copy a `warp-oss control pane send --pane <id> `
+    // template to the clipboard. Surfaces the pane id at all times
+    // (including while a long-running TUI like `top` or `vim` is in the
+    // foreground) so an external agent can address the pane.
+    pane_id_button: ViewHandle<ActionButton>,
+
     // Standard "Use agent" UI
     button: ViewHandle<ActionButton>,
     give_control_back_button: ViewHandle<ActionButton>,
@@ -1089,6 +1097,20 @@ impl UseAgentToolbar {
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let button_size = ButtonSize::XSmall;
+
+        let pane_label = format!("Pane {terminal_view_id}");
+        let copy_payload = format!("warp-oss control pane send --pane {terminal_view_id} ");
+        let pane_id_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new(pane_label, AgentFooterButtonTheme::new(Some(terminal_model.clone())))
+                .with_size(button_size)
+                .with_tooltip("Copy pane send template")
+                .with_tooltip_alignment(TooltipAlignment::Left)
+                .on_click(move |ctx| {
+                    ctx.dispatch_typed_action(UseAgentToolbarAction::CopyToClipboard(
+                        copy_payload.clone(),
+                    ));
+                })
+        });
 
         let button = ctx.add_typed_action_view(|ctx| {
             ActionButton::new(
@@ -1169,6 +1191,7 @@ impl UseAgentToolbar {
 
         Self {
             terminal_view_id,
+            pane_id_button,
             button,
             give_control_back_button,
             dismiss_button,
@@ -1374,6 +1397,7 @@ impl View for UseAgentToolbar {
             .with_spacing(4.)
             .with_main_axis_size(MainAxisSize::Max)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(ChildView::new(&self.pane_id_button).finish())
             .with_child(
                 ChildView::new(if show_give_control_back_button {
                     &self.give_control_back_button
@@ -1413,29 +1437,52 @@ impl View for UseAgentToolbar {
 #[derive(Debug, Clone)]
 pub enum UseAgentToolbarAction {
     Dismiss { permanently: bool },
+    /// Write the given string to the system clipboard. Dispatched by the
+    /// `Pane <id>` chip so the actual clipboard write happens inside the
+    /// view's `ViewContext` (the `EventContext` available to `on_click`
+    /// can't reach the clipboard directly).
+    CopyToClipboard(String),
 }
 
 impl TypedActionView for UseAgentToolbar {
     type Action = UseAgentToolbarAction;
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
-        let UseAgentToolbarAction::Dismiss { permanently } = action;
-        self.did_user_dismiss = true;
-        ctx.emit(UseAgentToolbarEvent::Dismiss);
+        match action {
+            UseAgentToolbarAction::Dismiss { permanently } => {
+                self.did_user_dismiss = true;
+                ctx.emit(UseAgentToolbarEvent::Dismiss);
 
-        if *permanently {
-            AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                if let Err(e) = settings
-                    .should_render_use_agent_footer_for_user_commands
-                    .set_value(false, ctx)
-                {
-                    report_error!(anyhow!("{e:?}")
-                        .context("Failed to set `ShouldRenderUseAgentToolbarForUserCommands`"));
+                if *permanently {
+                    AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                        if let Err(e) = settings
+                            .should_render_use_agent_footer_for_user_commands
+                            .set_value(false, ctx)
+                        {
+                            report_error!(anyhow!("{e:?}").context(
+                                "Failed to set `ShouldRenderUseAgentToolbarForUserCommands`"
+                            ));
+                        }
+                    });
                 }
-            });
-        }
 
-        ctx.notify();
+                ctx.notify();
+            }
+            UseAgentToolbarAction::CopyToClipboard(text) => {
+                ctx.clipboard().write(
+                    warpui::clipboard::ClipboardContent::plain_text(text.clone()),
+                );
+                let window_id = ctx.window_id();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::success("Copied to clipboard".to_owned()),
+                        window_id,
+                        ctx,
+                    );
+                });
+                ctx.notify();
+            }
+        }
     }
 }
 
