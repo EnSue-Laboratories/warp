@@ -13101,6 +13101,7 @@ impl Input {
                     detected_command.argument.as_ref(),
                     SlashCommandTrigger::input(),
                     /*is_queued_prompt*/ true,
+                    detected_command.is_disposable,
                     ctx,
                 )
             }
