@@ -183,7 +183,15 @@ impl Input {
             // TODO (zachbai): this is a hack for Oz launch. Caller
             // should probably be invoking `execute_slash_command` in this case.
             let argument = if !self.suggestions_mode_model.as_ref(ctx).is_slash_commands() {
-                let trimmed = self.buffer_text(ctx).trim().to_owned();
+                let buffer = self.buffer_text(ctx);
+                // `!foo` is shorthand for `/agent foo`; strip the bang when this command is
+                // triggered via keybinding while the buffer is in shorthand form.
+                let stripped = if command.name == commands::AGENT.name {
+                    buffer.strip_prefix('!').unwrap_or(&buffer)
+                } else {
+                    buffer.as_str()
+                };
+                let trimmed = stripped.trim().to_owned();
                 (!trimmed.is_empty()).then_some(trimmed)
             } else {
                 None

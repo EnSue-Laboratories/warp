@@ -8,7 +8,25 @@ use crate::ai::blocklist::{
     BlocklistAIInputEvent, BlocklistAIInputModel, InputTypeAutoDetectionSource,
 };
 use crate::ai::skills::SkillManager;
+use crate::search::slash_command_menu::static_commands::commands::AGENT;
 use crate::search::slash_command_menu::StaticCommand;
+
+/// Personal-fork shortcut: `!foo` is treated as `/agent foo`. The input buffer keeps
+/// the `!` so the user sees what they typed; only the parser sees the rewritten form.
+const BANG_PREFIX: char = '!';
+
+/// If `text` starts with `!`, return the `/agent`-rewritten form for parsing.
+fn bang_rewritten(text: &str) -> Option<String> {
+    let rest = text.strip_prefix(BANG_PREFIX)?;
+    let agent_name = AGENT.name;
+    Some(if rest.is_empty() {
+        agent_name.to_owned()
+    } else if rest.starts_with(' ') {
+        format!("{agent_name}{rest}")
+    } else {
+        format!("{agent_name} {rest}")
+    })
+}
 use crate::settings::InputSettings;
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
 use crate::terminal::input::slash_commands::SlashCommandDataSource;
@@ -88,9 +106,15 @@ impl SlashCommandEntryState {
     /// in the input buffer, or `None` if no command/skill is detected.
     pub fn command_prefix_highlight_len(&self, buffer_text: &str) -> Option<usize> {
         match self {
-            SlashCommandEntryState::SlashCommand(detected) => buffer_text
-                .starts_with(detected.command.name)
-                .then_some(detected.command.name.len()),
+            SlashCommandEntryState::SlashCommand(detected) => {
+                if buffer_text.starts_with(BANG_PREFIX) && detected.command.name == AGENT.name {
+                    Some(BANG_PREFIX.len_utf8())
+                } else {
+                    buffer_text
+                        .starts_with(detected.command.name)
+                        .then_some(detected.command.name.len())
+                }
+            }
             SlashCommandEntryState::SkillCommand(detected) => {
                 // Skill name doesn't include the leading '/', so we prefix it for matching.
                 let prefix_len = 1 + detected.name.len();
@@ -224,6 +248,16 @@ impl SlashCommandModel {
     /// Use this when you have a prompt string and need to know whether it is
     /// a slash command, skill command, or plain text.
     pub fn detect_command(&self, text: &str, ctx: &AppContext) -> SlashCommandEntryState {
+        if let Some(rewritten) = bang_rewritten(text) {
+            // `!` is shorthand for `/agent`. Only resolves if AGENT is in the active set
+            // (e.g., AI is enabled); otherwise treat as plain text rather than composing.
+            return self
+                .data_source
+                .as_ref(ctx)
+                .parse_slash_command(&rewritten)
+                .map(SlashCommandEntryState::SlashCommand)
+                .unwrap_or(SlashCommandEntryState::None);
+        }
         if !text.starts_with('/') {
             return SlashCommandEntryState::None;
         }
@@ -310,11 +344,13 @@ impl SlashCommandModel {
             return;
         }
 
-        // If the state is disabled but the buffer now starts with '/', re-evaluate.
-        // This handles the case where the user types a query with '/' (disabling slash commands),
-        // then edits the buffer to insert '/plan ' at the beginning.
-        let did_add_slash = new.starts_with('/') && !old.starts_with('/');
-        if self.state.is_disabled() && !did_add_slash {
+        // If the state is disabled but the buffer now starts with '/' (or our `!` agent
+        // shortcut), re-evaluate. This handles the case where the user types a query with
+        // `/` (disabling slash commands), then edits the buffer to insert `/plan ` or
+        // `!foo` at the beginning.
+        let is_trigger_prefix = |s: &str| s.starts_with('/') || s.starts_with(BANG_PREFIX);
+        let did_add_trigger = is_trigger_prefix(new) && !is_trigger_prefix(old);
+        if self.state.is_disabled() && !did_add_trigger {
             return;
         }
 

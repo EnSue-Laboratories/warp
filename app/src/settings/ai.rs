@@ -734,7 +734,10 @@ define_settings_group!(AISettings, settings: [
     // `is_ai_autodetection_enabled()` getter.
     ai_autodetection_enabled_internal: AIAutoDetectionEnabled {
         type: bool,
-        default: true,
+        // Personal-fork default: off. The classifier flips Shell <-> AI based on the buffer
+        // and is unreliable enough that surprise mode swaps cause more friction than the
+        // autodetect saves. Re-enable via Settings if you want it back.
+        default: false,
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
