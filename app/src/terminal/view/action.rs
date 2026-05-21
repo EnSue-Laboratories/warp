@@ -376,6 +376,12 @@ pub enum TerminalAction {
     ToggleCodeReviewPane {
         entrypoint: CodeReviewPaneEntrypoint,
     },
+    /// Open the code review pane (if not already open) and immediately
+    /// show the commit dialog. Lets the diff chip jump straight to "commit
+    /// & push" without first navigating the pane UI.
+    OpenCommitDialog {
+        entrypoint: CodeReviewPaneEntrypoint,
+    },
     InitProject,
     SummarizeConversation,
     IndexProjectSpeedbump,
@@ -702,6 +708,7 @@ impl fmt::Debug for TerminalAction {
             ToggleTodoPopup => write!(f, "ToggleTodoPopup"),
             CloseTodoPopup => write!(f, "CloseTodoPopup"),
             ToggleCodeReviewPane { .. } => write!(f, "ToggleCodeReviewPane"),
+            OpenCommitDialog { .. } => write!(f, "OpenCommitDialog"),
             InitProject => write!(f, "InitProject"),
             IndexProjectSpeedbump => write!(f, "IndexProject"),
             AddProjectAtCurrentDirectory => write!(f, "AddProjectAtCurrentDirectory"),

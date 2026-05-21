@@ -1216,6 +1216,9 @@ fn handle_terminal_view_event(
             Event::OpenCodeReviewPane(arg) => {
                 ctx.emit(pane_group::Event::OpenCodeReviewPane(arg.clone()));
             }
+            Event::OpenCommitDialog(arg) => {
+                ctx.emit(pane_group::Event::OpenCommitDialog(arg.clone()));
+            }
             Event::OpenCodeReviewPaneAndScrollToComment {
                 open_code_review,
                 comment,

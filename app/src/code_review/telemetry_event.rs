@@ -67,7 +67,7 @@ pub enum GitDialogStatus {
 }
 
 /// Entry points for opening the code review pane.
-#[derive(Clone, Copy, Debug, SerializeDisplay, Default)]
+#[derive(Clone, Copy, Debug, SerializeDisplay, Default, PartialEq, Eq)]
 pub enum CodeReviewPaneEntrypoint {
     /// Opened via the git diff chip (git changes button in AI control panel).
     GitDiffChip,

@@ -563,6 +563,10 @@ pub enum Event {
     },
     OpenCodeReviewPane(CodeReviewPanelArg),
     ToggleCodeReviewPane(CodeReviewPanelArg),
+    /// Open the code review pane and dispatch `OpenCommitDialog` to the
+    /// resulting view, so the diff chip's right-click shortcut lands the
+    /// user in the commit composer without an intermediate click.
+    OpenCommitDialog(CodeReviewPanelArg),
     /// Tell the workspace to run a workflow in the active tab's active session.
     RunWorkflow {
         workflow: Arc<WorkflowType>,

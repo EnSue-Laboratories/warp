@@ -1772,6 +1772,8 @@ pub enum Event {
     },
     OpenCodeReviewPane(CodeReviewPanelArg),
     ToggleCodeReviewPane(CodeReviewPanelArg),
+    /// Open the code review pane and immediately surface the commit dialog.
+    OpenCommitDialog(CodeReviewPanelArg),
     InsertCodeReviewComments {
         repo_path: LocalOrRemotePath,
         comments: Vec<PendingImportedReviewComment>,
@@ -25283,6 +25285,7 @@ impl TypedActionView for TerminalView {
             | ToggleTodoPopup
             | CloseTodoPopup
             | ToggleCodeReviewPane { .. }
+            | OpenCommitDialog { .. }
             | OpenProjectRulesPane
             | InitProject
             | IndexProjectSpeedbump
@@ -26107,6 +26110,15 @@ impl TypedActionView for TerminalView {
             }
             ToggleCodeReviewPane { entrypoint } => {
                 ctx.emit(Event::ToggleCodeReviewPane(CodeReviewPanelArg {
+                    repo_path: self.current_repo_path.clone(),
+                    terminal_view: self.view_handle.clone(),
+                    entrypoint: *entrypoint,
+                    focus_new_pane: true,
+                    cli_agent: None,
+                }));
+            }
+            OpenCommitDialog { entrypoint } => {
+                ctx.emit(Event::OpenCommitDialog(CodeReviewPanelArg {
                     repo_path: self.current_repo_path.clone(),
                     terminal_view: self.view_handle.clone(),
                     entrypoint: *entrypoint,

@@ -590,16 +590,30 @@ pub async fn get_diff_for_commit_message(
     Err(anyhow!("Not supported on wasm"))
 }
 
-/// Commits changes. If `include_unstaged` is true, stages all changes first via `git add -A`.
-/// `path_env` is forwarded so commit hooks can find tools on the user's `PATH`.
+/// Commits changes. When `explicit_files` is `Some`, only those paths are
+/// staged (the index is reset first so anything pre-staged outside the
+/// selection doesn't sneak in). Otherwise `include_unstaged=true` stages
+/// every change via `git add -A`, and `false` commits whatever happened to
+/// be staged. `path_env` is forwarded so commit hooks can find tools on
+/// the user's `PATH`.
 #[cfg(feature = "local_fs")]
 pub async fn run_commit(
     repo_path: &Path,
     message: &str,
     include_unstaged: bool,
+    explicit_files: Option<&[String]>,
     path_env: Option<&str>,
 ) -> Result<String> {
-    if include_unstaged {
+    if let Some(files) = explicit_files {
+        // Wipe whatever happened to be staged so the resulting commit matches
+        // exactly the user's checkbox selection — no more, no less.
+        run_git_command_with_env(repo_path, &["reset", "--", "."], path_env).await?;
+        let mut args: Vec<&str> = vec!["add", "--"];
+        for f in files {
+            args.push(f.as_str());
+        }
+        run_git_command_with_env(repo_path, &args, path_env).await?;
+    } else if include_unstaged {
         run_git_command_with_env(repo_path, &["add", "-A"], path_env).await?;
     }
     run_git_command_with_env(repo_path, &["commit", "-m", message], path_env).await
@@ -610,6 +624,7 @@ pub async fn run_commit(
     _repo_path: &Path,
     _message: &str,
     _include_unstaged: bool,
+    _explicit_files: Option<&[String]>,
     _path_env: Option<&str>,
 ) -> Result<String> {
     Err(anyhow!("Not supported on wasm"))

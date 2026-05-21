@@ -125,13 +125,14 @@ use warpui::{
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DispatchEventResult,
         DragBarSide, Element, Empty, EventHandler, Flex, List, ListState, MainAxisAlignment,
         MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
-        Percentage, PositionedElementAnchor, PositionedElementOffsetBounds, Radius, Rect,
+        Fill, Percentage, PositionedElementAnchor, PositionedElementOffsetBounds, Radius, Rect,
         Resizable, ResizableStateHandle, ScrollOffset, ScrollStateHandle, ScrollbarWidth, Stack,
         Text, DEFAULT_UI_LINE_HEIGHT_RATIO,
     },
     keymap::Keystroke,
     ui_components::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
+        checkbox::Checkbox,
         components::{Coords, UiComponentStyles},
     },
     units::Pixels,
@@ -222,6 +223,60 @@ pub struct CodeReviewCommentDebugState {
     pub repo_path: Option<LocalOrRemotePath>,
     pub has_active_comment_model: bool,
     pub comment_list: CommentListDebugState,
+}
+
+/// Shared style for the per-file include checkbox and the master select-all
+/// checkbox. Both use the same visual treatment so the master row reads as
+/// "the same checkbox, applied to every file at once."
+fn render_include_checkbox<F>(
+    mouse_state: MouseStateHandle,
+    checked: bool,
+    appearance: &Appearance,
+    on_click: F,
+) -> Box<dyn Element>
+where
+    F: 'static + Fn(&mut warpui::EventContext<'_>),
+{
+    let theme = appearance.theme();
+    let checkbox_size = appearance.ui_font_size();
+    let border_color = theme.sub_text_color(theme.background()).into_solid();
+    let checked_fill = theme.accent().into();
+    let checked_text = theme.background().into_solid();
+    let base_styles = UiComponentStyles {
+        font_color: Some(theme.main_text_color(theme.background()).into_solid()),
+        background: Some(theme.background().into()),
+        font_size: Some(checkbox_size),
+        height: Some(checkbox_size + 2.),
+        width: Some(checkbox_size + 2.),
+        padding: Some(Default::default()),
+        margin: Some(Default::default()),
+        border_color: Some(Fill::Solid(border_color).into()),
+        border_width: Some(1.),
+        border_radius: Some(CornerRadius::with_all(Radius::Pixels(2.))),
+        ..Default::default()
+    };
+    let hovered_styles = base_styles.merge(UiComponentStyles {
+        background: Some(neutral_2(theme).into()),
+        ..Default::default()
+    });
+    let checked_styles = base_styles.merge(UiComponentStyles {
+        background: Some(checked_fill),
+        font_color: Some(checked_text),
+        border_color: Some(checked_fill.into()),
+        ..Default::default()
+    });
+    Checkbox::new(
+        mouse_state,
+        base_styles,
+        Some(hovered_styles),
+        Some(checked_styles),
+        None,
+    )
+    .check(checked)
+    .build()
+    .on_click(move |ctx, _, _| on_click(ctx))
+    .with_cursor(Cursor::PointingHand)
+    .finish()
 }
 
 /// Renders a file navigation button (sidebar toggle) that can be reused across views.
@@ -375,6 +430,12 @@ pub enum CodeReviewAction {
         line_and_column: Option<LineAndColumnArg>,
     },
     ToggleFileExpanded(String),
+    /// Toggle whether a file is included in the next commit. Only meaningful
+    /// in `DiffMode::Head` (uncommitted-changes view).
+    ToggleFileIncluded(String),
+    /// Master select-all: when any file is included, deselect everything;
+    /// when nothing is included, re-include everything.
+    ToggleAllFilesIncluded,
     OpenHeaderMenu,
     SetDiffMode(DiffMode),
     ToggleFileSidebar,
@@ -419,6 +480,9 @@ pub struct FileState {
     discard_button: ViewHandle<ActionButton>,
     add_context_button: ViewHandle<ActionButton>,
     copy_path_button: ViewHandle<ActionButton>,
+    /// Hover/click state for the per-file include checkbox shown in
+    /// uncommitted-changes mode.
+    include_checkbox_mouse_state: MouseStateHandle,
 }
 
 pub(crate) struct LoadedState {
@@ -590,6 +654,11 @@ struct RepositoryState {
 
     /// Whether a repo-relative file path has been explicitly expanded (true) or collapsed (false).
     file_expanded: HashMap<String, bool>,
+
+    /// Repo-relative file paths the user has unchecked in the uncommitted-changes
+    /// view. Empty set = everything is included (the default). Only meaningful
+    /// in `DiffMode::Head`; ignored in PR / branch-compare modes.
+    file_excluded: HashSet<String>,
 }
 
 impl RepositoryState {
@@ -599,6 +668,17 @@ impl RepositoryState {
             state: CodeReviewViewState::None,
             available_branches: Vec::new(),
             file_expanded: HashMap::new(),
+            file_excluded: HashSet::new(),
+        }
+    }
+
+    fn is_file_included(&self, path: &str) -> bool {
+        !self.file_excluded.contains(path)
+    }
+
+    fn toggle_file_included(&mut self, path: &str) {
+        if !self.file_excluded.remove(path) {
+            self.file_excluded.insert(path.to_string());
         }
     }
 
@@ -618,7 +698,7 @@ impl RepositoryState {
         Some(loaded_state)
     }
 
-    fn should_auto_expand_file(&self, file: &FileDiff) -> bool {
+    fn should_auto_expand_file(&self, file: &FileDiff, diff_mode: &DiffMode) -> bool {
         if let Some(manually_expanded) = self.file_expanded.get(&file.file_path) {
             return *manually_expanded;
         }
@@ -628,6 +708,14 @@ impl RepositoryState {
         }
 
         if file.size != DiffSize::Normal {
+            return false;
+        }
+
+        // Uncommitted-changes view is a commit-staging surface — keep files
+        // collapsed by default so the file list reads as a checklist instead of
+        // a scrollwall of diffs. Other modes (PR review, branch compare) still
+        // default to expanded since the user is there to read the diff.
+        if matches!(diff_mode, DiffMode::Head) {
             return false;
         }
 
@@ -655,6 +743,9 @@ pub struct CodeReviewView {
     file_sidebar_expanded: bool,
     /// The file sidebar state from before a code review panel is maximized.
     file_sidebar_expanded_before_maximize: Option<bool>,
+    /// Hover/click state for the master select-all/deselect-all checkbox shown
+    /// above the file list in uncommitted-changes mode.
+    select_all_mouse_state: MouseStateHandle,
     scroll_state: ScrollStateHandle,
     viewported_list_state: ListState<RelocatableScrollContext>,
 
@@ -1347,6 +1438,7 @@ impl CodeReviewView {
             git_operations_menu_open: false,
             file_sidebar_expanded: false,
             file_sidebar_expanded_before_maximize: None,
+            select_all_mouse_state: MouseStateHandle::default(),
             position_id_prefix: random_str,
             viewported_list_state: list_state,
             scroll_state: ScrollStateHandle::default(),
@@ -2599,7 +2691,7 @@ impl CodeReviewView {
                     self.create_code_review_model(file, ctx)
                 }
             };
-            let is_expanded = self.should_auto_expand_file(&file.file_diff);
+            let is_expanded = self.should_auto_expand_file(&file.file_diff, ctx);
 
             let file_path = file.file_diff.file_path.clone();
             let file_line = file_line_for_open(&file.file_diff);
@@ -2693,6 +2785,7 @@ impl CodeReviewView {
                 copy_path_button,
                 sidebar_mouse_state: MouseStateHandle::default(),
                 header_mouse_state: MouseStateHandle::default(),
+                include_checkbox_mouse_state: MouseStateHandle::default(),
             })
         }
 
@@ -2722,10 +2815,11 @@ impl CodeReviewView {
         self.render_file_diff(file_state, index, scroll_offset, appearance, app)
     }
 
-    fn should_auto_expand_file(&self, file: &FileDiff) -> bool {
+    fn should_auto_expand_file(&self, file: &FileDiff, app: &AppContext) -> bool {
+        let diff_mode = self.diff_state_model.as_ref(app).diff_mode(app);
         self.active_repo
             .as_ref()
-            .map(|repo| repo.should_auto_expand_file(file))
+            .map(|repo| repo.should_auto_expand_file(file, &diff_mode))
             .unwrap_or(false)
     }
 
@@ -4062,11 +4156,15 @@ impl CodeReviewView {
         is_in_split_pane: bool,
         app: &warpui::AppContext,
     ) -> Box<dyn Element> {
-        let top_section = Flex::column()
+        let mut top_section = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_main_axis_alignment(MainAxisAlignment::Start)
-            .with_child(self.render_header(state, appearance, is_in_split_pane, app))
-            .with_child(self.render_content(state, appearance, app));
+            .with_child(self.render_header(state, appearance, is_in_split_pane, app));
+        if let Some(master_row) = self.render_select_all_row(state, appearance, app) {
+            top_section.add_child(master_row);
+        }
+        top_section.add_child(self.render_content(state, appearance, app));
+        let top_section = top_section;
 
         let top_section_with_margin = ConstrainedBox::new(
             Container::new(Shrinkable::new(1., top_section.finish()).finish())
@@ -4605,6 +4703,63 @@ impl CodeReviewView {
         Shrinkable::new(1., sidebar_and_diffs_row.finish()).finish()
     }
 
+    /// Renders the "Select all / Deselect all" row that sits above the file
+    /// list in the uncommitted-changes view. Returns `None` in other modes so
+    /// PR / branch-compare views are unaffected.
+    fn render_select_all_row(
+        &self,
+        state: &LoadedState,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Option<Box<dyn Element>> {
+        let diff_mode = self.diff_state_model.as_ref(app).diff_mode(app);
+        if !matches!(diff_mode, DiffMode::Head) {
+            return None;
+        }
+        let Some(repo) = self.active_repo.as_ref() else {
+            return None;
+        };
+        let total = state.file_states.len();
+        if total == 0 {
+            return None;
+        }
+        let included = state
+            .file_states
+            .keys()
+            .filter(|p| repo.is_file_included(p))
+            .count();
+        let all_checked = included == total;
+        let label = if all_checked {
+            format!("All {total} files included")
+        } else {
+            format!("{included} / {total} files included")
+        };
+        let theme = appearance.theme();
+        let label_color = theme.sub_text_color(theme.background()).into_solid();
+        let checkbox = render_include_checkbox(
+            self.select_all_mouse_state.clone(),
+            all_checked,
+            appearance,
+            |ctx| ctx.dispatch_typed_action(CodeReviewAction::ToggleAllFilesIncluded),
+        );
+        let row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Container::new(checkbox).with_margin_right(8.).finish())
+            .with_child(
+                Text::new(label, appearance.ui_font_family(), appearance.ui_font_size())
+                    .with_color(label_color)
+                    .finish(),
+            )
+            .finish();
+        Some(
+            Container::new(row)
+                .with_padding_top(4.)
+                .with_padding_bottom(8.)
+                .with_padding_left(8.)
+                .finish(),
+        )
+    }
+
     fn render_file_sidebar(
         &self,
         state: &LoadedState,
@@ -4930,12 +5085,21 @@ impl CodeReviewView {
 
         let mut left_section = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_child(
-                Container::new(ChildView::new(&file.chevron_button).finish())
+            .with_main_axis_size(MainAxisSize::Min);
+
+        if let Some(checkbox) = self.render_file_include_checkbox(file, appearance, app) {
+            left_section.add_child(
+                Container::new(checkbox)
                     .with_margin_right(8.)
                     .finish(),
             );
+        }
+
+        left_section.add_child(
+            Container::new(ChildView::new(&file.chevron_button).finish())
+                .with_margin_right(8.)
+                .finish(),
+        );
         if let GitFileStatus::Renamed { old_path } = &file.file_diff.status {
             left_section.add_children([
                 Shrinkable::new(
@@ -5135,6 +5299,41 @@ impl CodeReviewView {
         Container::new(inner_header)
             .with_background(outer_bg)
             .finish()
+    }
+
+    /// Renders the per-file include checkbox shown to the left of the chevron
+    /// in uncommitted-changes mode. Returns `None` in other diff modes so the
+    /// header layout is unchanged for PR / branch-compare views.
+    fn render_file_include_checkbox(
+        &self,
+        file: &FileState,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Option<Box<dyn Element>> {
+        let diff_mode = self.diff_state_model.as_ref(app).diff_mode(app);
+        if !matches!(diff_mode, DiffMode::Head) {
+            return None;
+        }
+
+        let is_included = self
+            .active_repo
+            .as_ref()
+            .map(|repo| repo.is_file_included(&file.file_diff.file_path))
+            .unwrap_or(true);
+
+        let file_path = file.file_diff.file_path.clone();
+        Some(
+            render_include_checkbox(
+                file.include_checkbox_mouse_state.clone(),
+                is_included,
+                appearance,
+                move |ctx| {
+                    ctx.dispatch_typed_action(CodeReviewAction::ToggleFileIncluded(
+                        file_path.clone(),
+                    ));
+                },
+            ),
+        )
     }
 
     /// Renders file-specific statistics
@@ -6361,6 +6560,39 @@ impl CodeReviewView {
             .is_some_and(|stats| !stats.has_no_changes())
     }
 
+    /// Marks every file's cached height as dirty so the viewported list
+    /// re-measures on the next paint. Use after any layout change that
+    /// would shrink/widen the diff column (e.g., toggling the file sidebar).
+    fn invalidate_all_file_heights(&mut self) {
+        let Some(repo) = self.active_repo.as_ref() else {
+            return;
+        };
+        let CodeReviewViewState::Loaded(loaded) = &repo.state else {
+            return;
+        };
+        for index in 0..loaded.file_states.len() {
+            self.viewported_list_state.invalidate_height_for_index(index);
+        }
+    }
+
+    /// Repo-relative paths of files the user has checked in the uncommitted
+    /// view. Returns the full file list when no exclusions are set (the common
+    /// case), and an empty vec when the user has unchecked every file.
+    fn included_file_paths(&self, _app: &AppContext) -> Vec<String> {
+        let Some(repo) = self.active_repo.as_ref() else {
+            return Vec::new();
+        };
+        let CodeReviewViewState::Loaded(loaded) = &repo.state else {
+            return Vec::new();
+        };
+        loaded
+            .file_states
+            .keys()
+            .filter(|path| repo.is_file_included(path))
+            .cloned()
+            .collect()
+    }
+
     /// Opens a `GitDialog` overlay for the given `kind`. Centralizes the
     /// common guards (single-dialog invariant, git-ops blocked check, repo
     /// + branch lookup), the per-kind dialog construction, and the event
@@ -6402,12 +6634,28 @@ impl CodeReviewView {
                     && !diff_state.is_pr_info_refreshing(ctx)
                     && !diff_state.is_on_main_branch(ctx);
                 let has_upstream = diff_state.upstream_ref(ctx).is_some();
+                // If the user is in the uncommitted-changes view and has
+                // unchecked at least one file, narrow the commit to the
+                // checked paths only. Otherwise let the dialog keep its
+                // existing include-unstaged behavior.
+                let diff_mode = diff_state.diff_mode(ctx);
+                let explicit_files = if matches!(diff_mode, DiffMode::Head)
+                    && self
+                        .active_repo
+                        .as_ref()
+                        .is_some_and(|repo| !repo.file_excluded.is_empty())
+                {
+                    Some(self.included_file_paths(ctx))
+                } else {
+                    None
+                };
                 ctx.add_typed_action_view(|ctx| {
                     GitDialog::new_for_commit(
                         repo_path,
                         branch_name,
                         allow_create_pr,
                         has_upstream,
+                        explicit_files,
                         ctx,
                     )
                 })
@@ -6485,12 +6733,21 @@ impl CodeReviewView {
 
         match mode {
             PrimaryGitActionMode::Commit => {
-                let disabled = !self.has_uncommitted_changes(ctx);
+                let has_changes = self.has_uncommitted_changes(ctx);
+                let nothing_selected = has_changes && self.included_file_paths(ctx).is_empty();
+                let disabled = !has_changes || nothing_selected;
+                let tooltip = if !has_changes {
+                    Some("No changes to commit")
+                } else if nothing_selected {
+                    Some("Check at least one file to commit")
+                } else {
+                    None
+                };
                 self.git_primary_action_button.update(ctx, |button, ctx| {
                     button.set_label("Commit", ctx);
                     button.set_icon(Some(Icon::GitCommit), ctx);
                     button.set_disabled(disabled, ctx);
-                    button.set_tooltip(disabled.then_some("No changes to commit"), ctx);
+                    button.set_tooltip(tooltip, ctx);
                     button.set_on_click(
                         |ctx| ctx.dispatch_typed_action(CodeReviewAction::OpenCommitDialog),
                         ctx,
@@ -7136,6 +7393,31 @@ impl TypedActionView for CodeReviewView {
 
                 ctx.notify();
             }
+            CodeReviewAction::ToggleFileIncluded(path) => {
+                if let Some(repo) = self.active_repo.as_mut() {
+                    repo.toggle_file_included(path);
+                }
+                // Recompute the Commit button enabled-state — if nothing is
+                // checked anymore, the button must disable itself.
+                self.update_git_operations_ui(ctx);
+                ctx.notify();
+            }
+            CodeReviewAction::ToggleAllFilesIncluded => {
+                let included_paths = self.included_file_paths(ctx);
+                if let Some(repo) = self.active_repo.as_mut() {
+                    if included_paths.is_empty() {
+                        // Nothing currently included → clear exclusions so
+                        // every file is back in the commit.
+                        repo.file_excluded.clear();
+                    } else if let CodeReviewViewState::Loaded(loaded) = &repo.state {
+                        // Anything included → exclude every file.
+                        repo.file_excluded =
+                            loaded.file_states.keys().cloned().collect();
+                    }
+                }
+                self.update_git_operations_ui(ctx);
+                ctx.notify();
+            }
             CodeReviewAction::SetDiffMode(mode) => {
                 self.apply_diff_mode(mode.clone(), ctx);
             }
@@ -7150,6 +7432,13 @@ impl TypedActionView for CodeReviewView {
                 } else {
                     self.open_file_sidebar(ctx);
                 }
+                // Toggling the sidebar changes the diff column's width, which
+                // means every cached item height in the viewported list was
+                // measured at the wrong width. Invalidate them so the list
+                // re-measures on the next frame instead of flashing through
+                // stale heights (which manifested as the diff content briefly
+                // disappearing on first open).
+                self.invalidate_all_file_heights();
                 self.update_file_nav_button_tooltip(ctx);
                 ctx.notify();
             }

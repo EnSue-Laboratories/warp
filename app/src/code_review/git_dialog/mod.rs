@@ -496,6 +496,7 @@ impl GitDialog {
         branch_name: String,
         allow_create_pr: bool,
         has_upstream: bool,
+        explicit_files: Option<Vec<String>>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         // Commit's confirm button is a static "Confirm" with no icon; the
@@ -504,7 +505,8 @@ impl GitDialog {
         // will actually run on click.
         let (confirm_button, cancel_button, close_button) =
             Self::build_dialog_buttons("Confirm", None, ctx);
-        let state = commit::new_state(&repo_path, allow_create_pr, has_upstream, ctx);
+        let state =
+            commit::new_state(&repo_path, allow_create_pr, has_upstream, explicit_files, ctx);
         let this = Self {
             repo_path,
             branch_name,
@@ -630,6 +632,25 @@ impl GitDialog {
         self.close_button.update(ctx, |b, ctx| {
             b.set_disabled(true, ctx);
         });
+        ctx.notify();
+    }
+
+    /// Reverses `set_loading`: restores the confirm label and re-enables
+    /// the dialog's buttons so the user can interact (or retry). Used when
+    /// a deferred confirm (Confirm pressed while AI was generating) needs
+    /// to bail out without running the commit.
+    fn clear_loading(&mut self, ctx: &mut ViewContext<Self>) {
+        self.loading = false;
+        self.confirm_button.update(ctx, |b, ctx| {
+            b.set_label("Confirm", ctx);
+        });
+        self.cancel_button.update(ctx, |b, ctx| {
+            b.set_disabled(false, ctx);
+        });
+        self.close_button.update(ctx, |b, ctx| {
+            b.set_disabled(false, ctx);
+        });
+        self.refresh_confirm_enabled(ctx);
         ctx.notify();
     }
 
