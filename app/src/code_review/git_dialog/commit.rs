@@ -2,7 +2,7 @@
 //! then on confirm runs `run_commit` and optionally chains `run_push` /
 //! `create_pr` per the selected intent.
 
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use warp_core::ui::appearance::Appearance;
 use warpui::{
@@ -78,6 +78,9 @@ const GENERATING_PLACEHOLDER_TEXT: &str = "Generating commit message\u{2026}";
 /// nudge if the user later clears the generated draft, or as guidance when
 /// autogen failed and the editor is blank. Also used when autogen is off.
 const FALLBACK_PLACEHOLDER_TEXT: &str = "Type a commit message";
+/// Placeholder shown when autogen is available so the user knows they can
+/// skip typing and just press Confirm.
+const AUTOGEN_AVAILABLE_PLACEHOLDER_TEXT: &str = "Type a message — or leave blank to generate one";
 /// Loading-state label while the commit / chain runs. Static regardless of
 /// which chain is in flight — the success toast communicates what actually
 /// ran.
@@ -86,6 +89,11 @@ const LOADING_LABEL: &str = "Committing\u{2026}";
 pub struct CommitState {
     pub(super) intent: CommitIntent,
     include_unstaged: bool,
+    /// When `Some`, the dialog commits exactly these repo-relative files
+    /// (passed in from the code review pane's per-file checkboxes). When
+    /// `None`, the dialog falls back to the include-unstaged toggle and
+    /// uses `git add -A` like before.
+    explicit_files: Option<Vec<String>>,
     file_changes: Vec<FileChangeEntry>,
     changes_expanded: bool,
     switch_state: SwitchStateHandle,
@@ -99,12 +107,21 @@ pub struct CommitState {
     /// The intent is hidden entirely in either case; an existing PR is
     /// still reachable via the git operations menu in the header.
     commit_and_create_pr_button: Option<ViewHandle<ActionButton>>,
+    /// True while an AI commit-message generation request is in flight.
+    /// Used to decide whether a Confirm-with-blank-message press should
+    /// kick off a new request or simply wait on the existing one.
+    ai_autogen_in_flight: bool,
+    /// When `Some`, the user pressed Confirm with an empty editor and we
+    /// owe them a commit using whatever AI generation produces. Once the
+    /// generation lands we re-run `start_confirm` to actually commit.
+    pending_confirm_after_autogen: Option<CommitIntent>,
 }
 
 pub(super) fn new_state(
     repo_path: &Path,
     allow_create_pr: bool,
     has_upstream: bool,
+    explicit_files: Option<Vec<String>>,
     ctx: &mut ViewContext<GitDialog>,
 ) -> CommitState {
     // Dialog always opens with the plain commit intent; the user picks
@@ -193,6 +210,12 @@ pub(super) fn new_state(
 
     let include_unstaged = true;
     let repo_path_for_load = repo_path.to_path_buf();
+    // When an explicit selection came in from the pane, narrow the dialog's
+    // "Changes" panel to just those paths so the user sees exactly what will
+    // be committed (and `is_ready_to_confirm` doesn't gate on the index).
+    let explicit_filter: Option<HashSet<String>> = explicit_files
+        .as_ref()
+        .map(|files| files.iter().cloned().collect());
     ctx.spawn(
         async move { get_file_change_entries(&repo_path_for_load, include_unstaged).await },
         move |me, result, ctx| {
@@ -200,7 +223,10 @@ pub(super) fn new_state(
                 return;
             };
             let has_changes = match result {
-                Ok(entries) => {
+                Ok(mut entries) => {
+                    if let Some(filter) = &explicit_filter {
+                        entries.retain(|e| filter.contains(&e.path));
+                    }
                     let has_changes = !entries.is_empty();
                     state.file_changes = entries;
                     has_changes
@@ -213,6 +239,9 @@ pub(super) fn new_state(
             me.refresh_confirm_enabled(ctx);
             ctx.notify();
             if ai_autogen_enabled && has_changes {
+                if let GitDialogMode::Commit(state) = me.mode_mut() {
+                    state.ai_autogen_in_flight = true;
+                }
                 generate_commit_message(me.repo_path(), me.branch_name(), include_unstaged, ctx);
             }
         },
@@ -221,6 +250,7 @@ pub(super) fn new_state(
     let state = CommitState {
         intent,
         include_unstaged,
+        explicit_files,
         file_changes: Vec::new(),
         changes_expanded: true,
         switch_state: SwitchStateHandle::default(),
@@ -230,6 +260,12 @@ pub(super) fn new_state(
         commit_button,
         commit_and_push_button,
         commit_and_create_pr_button,
+        // Open-time autogen kicks off in the file-load callback when
+        // autogen is enabled and there are changes. We don't pre-set
+        // in_flight here because the file load is async — the autogen
+        // function itself flips the flag.
+        ai_autogen_in_flight: false,
+        pending_confirm_after_autogen: None,
     };
     apply_intent_selector(&state, ctx);
     state
@@ -240,17 +276,26 @@ pub(super) fn on_focus(state: &CommitState, ctx: &mut ViewContext<GitDialog>) {
 }
 
 pub(super) fn is_ready_to_confirm(state: &CommitState, app: &AppContext) -> bool {
-    // Confirm requires at least one file change and a non-empty commit
-    // message. While open-time autogen is in flight the editor is still
-    // empty, so this keeps the button disabled until the draft lands (or the
-    // user types something).
-    !state.file_changes.is_empty() && commit_message(state, app).is_some()
+    if state.file_changes.is_empty() {
+        return false;
+    }
+    if commit_message(state, app).is_some() {
+        return true;
+    }
+    // Empty message is OK if the user can press Confirm and have us
+    // generate the message for them (either we're already generating or
+    // autogen is enabled and we can kick it off on click).
+    state.ai_autogen_in_flight || should_send_git_ops_ai_request(app)
 }
 
 /// Returns a tooltip to show on the disabled Confirm button when the
 /// user needs to take action, or `None` when no tooltip is needed.
 pub(super) fn confirm_tooltip(state: &CommitState, app: &AppContext) -> Option<&'static str> {
-    if !state.file_changes.is_empty() && commit_message(state, app).is_none() {
+    if !state.file_changes.is_empty()
+        && commit_message(state, app).is_none()
+        && !state.ai_autogen_in_flight
+        && !should_send_git_ops_ai_request(app)
+    {
         Some("Enter a commit message")
     } else {
         None
@@ -294,6 +339,10 @@ fn generate_commit_message(
                 GitDialogMode::Commit(state) => state.message_editor.clone(),
                 _ => return,
             };
+            // Always flip the in-flight flag off, regardless of outcome.
+            if let GitDialogMode::Commit(state) = me.mode_mut() {
+                state.ai_autogen_in_flight = false;
+            }
             match result {
                 Ok(generated) => {
                     let user_typed = !editor_handle.as_ref(ctx).buffer_text(ctx).trim().is_empty();
@@ -301,7 +350,7 @@ fn generate_commit_message(
                         // Swap "Generating\u{2026}" for the manual-type
                         // prompt so it shows if the user later clears the
                         // generated draft.
-                        editor.set_placeholder_text(FALLBACK_PLACEHOLDER_TEXT, ctx);
+                        editor.set_placeholder_text(AUTOGEN_AVAILABLE_PLACEHOLDER_TEXT, ctx);
                         // User input wins — don't clobber their text.
                         if !user_typed {
                             editor.system_reset_buffer_text(generated.trim(), ctx);
@@ -309,12 +358,42 @@ fn generate_commit_message(
                     });
                     me.refresh_confirm_enabled(ctx);
                     ctx.notify();
+                    // If the user already hit Confirm and was waiting on the
+                    // message, run the commit now that we have one.
+                    let pending = match me.mode_mut() {
+                        GitDialogMode::Commit(state) => state.pending_confirm_after_autogen.take(),
+                        _ => None,
+                    };
+                    if let Some(intent) = pending {
+                        if let GitDialogMode::Commit(state) = me.mode_mut() {
+                            state.intent = intent;
+                        }
+                        // Clear the loading label that start_confirm set
+                        // earlier and re-run confirm with the populated editor.
+                        me.clear_loading(ctx);
+                        start_confirm(me, ctx);
+                    }
                 }
                 Err(err) => {
                     log::warn!("Failed to autogenerate commit message: {err}");
                     editor_handle.update(ctx, |editor, ctx| {
                         editor.set_placeholder_text(FALLBACK_PLACEHOLDER_TEXT, ctx);
                     });
+                    // If a pending confirm was waiting, abort it and exit
+                    // the loading state so the user can type manually.
+                    let had_pending = match me.mode_mut() {
+                        GitDialogMode::Commit(state) => {
+                            state.pending_confirm_after_autogen.take().is_some()
+                        }
+                        _ => false,
+                    };
+                    if had_pending {
+                        me.clear_loading(ctx);
+                        show_toast(
+                            "Couldn't generate a commit message — type one and try again.",
+                            ctx,
+                        );
+                    }
                     me.refresh_confirm_enabled(ctx);
                     ctx.notify();
                 }
@@ -362,14 +441,41 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     let GitDialogMode::Commit(state) = me.mode() else {
         return;
     };
-    // `is_ready_to_confirm` already guarantees a non-empty message, but
-    // guard against dispatch paths that could bypass the disabled state
-    // (e.g. keyboard shortcut).
+    let intent = state.intent;
+    // Confirm with an empty editor is a request to "generate and commit":
+    // park the intent on the state, kick off (or wait on) AI generation,
+    // and re-enter `start_confirm` from the generation callback once the
+    // message lands.
+    if commit_message(state, ctx).is_none() {
+        let ai_in_flight = state.ai_autogen_in_flight;
+        let ai_enabled = should_send_git_ops_ai_request(ctx);
+        if !ai_in_flight && !ai_enabled {
+            return;
+        }
+        if let GitDialogMode::Commit(state) = me.mode_mut() {
+            state.pending_confirm_after_autogen = Some(intent);
+        }
+        me.set_loading(LOADING_LABEL, ctx);
+        if !ai_in_flight {
+            if let GitDialogMode::Commit(state) = me.mode_mut() {
+                state.ai_autogen_in_flight = true;
+            }
+            let include_unstaged = match me.mode() {
+                GitDialogMode::Commit(s) => s.include_unstaged,
+                _ => true,
+            };
+            generate_commit_message(me.repo_path(), me.branch_name(), include_unstaged, ctx);
+        }
+        return;
+    }
+    let GitDialogMode::Commit(state) = me.mode() else {
+        return;
+    };
     let Some(message) = commit_message(state, ctx) else {
         return;
     };
-    let intent = state.intent;
     let include_unstaged = state.include_unstaged;
+    let explicit_files = state.explicit_files.clone();
     let ai_autogen_enabled = should_send_git_ops_ai_request(ctx);
     let message_editor = state.message_editor.clone();
     let repo_path = me.repo_path().clone();
@@ -393,7 +499,14 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
         async move {
             let path_env = path_future.await;
             let path_env_ref = path_env.as_deref();
-            run_commit(&repo_path, &message, include_unstaged, path_env_ref).await?;
+            run_commit(
+                &repo_path,
+                &message,
+                include_unstaged,
+                explicit_files.as_deref(),
+                path_env_ref,
+            )
+            .await?;
             let outcome = match intent {
                 CommitIntent::CommitOnly => CommitOutcome::Committed,
                 CommitIntent::CommitAndPush => {
@@ -574,38 +687,52 @@ fn render_changes_section(state: &CommitState, appearance: &Appearance) -> Box<d
     .with_color(main_color)
     .finish();
 
-    let include_label = Text::new(
-        "Include unstaged",
-        appearance.ui_font_family(),
-        appearance.ui_font_size(),
-    )
-    .with_color(sub_color)
-    .finish();
-
-    let switch = appearance
-        .ui_builder()
-        .switch(state.switch_state.clone())
-        .check(state.include_unstaged)
-        .build()
-        .on_click(move |ctx, _, _| {
-            ctx.dispatch_typed_action(GitDialogAction::Commit(
-                CommitSubAction::ToggleIncludeUnstaged,
-            ));
-        })
+    // With an explicit selection from the pane, "Include unstaged" is
+    // meaningless — the commit is locked to the picked paths. Hide the
+    // toggle and show a static "From selection" hint instead so the user
+    // knows the file set was chosen upstream.
+    let header_right: Box<dyn Element> = if state.explicit_files.is_some() {
+        Text::new(
+            "From selection",
+            appearance.ui_font_family(),
+            appearance.ui_font_size(),
+        )
+        .with_color(sub_color)
+        .finish()
+    } else {
+        let include_label = Text::new(
+            "Include unstaged",
+            appearance.ui_font_family(),
+            appearance.ui_font_size(),
+        )
+        .with_color(sub_color)
         .finish();
 
-    let toggle_row = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_child(include_label)
-        .with_child(Container::new(switch).with_margin_left(4.).finish())
-        .finish();
+        let switch = appearance
+            .ui_builder()
+            .switch(state.switch_state.clone())
+            .check(state.include_unstaged)
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(GitDialogAction::Commit(
+                    CommitSubAction::ToggleIncludeUnstaged,
+                ));
+            })
+            .finish();
+
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(include_label)
+            .with_child(Container::new(switch).with_margin_left(4.).finish())
+            .finish()
+    };
 
     let header_row = Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_child(changes_label)
-        .with_child(toggle_row)
+        .with_child(header_right)
         .finish();
 
     let changes_box = render_file_changes_box(

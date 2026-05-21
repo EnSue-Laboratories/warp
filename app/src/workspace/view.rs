@@ -178,6 +178,7 @@ use crate::auth::auth_view_modal::{AuthRedirectPayload, AuthView, AuthViewEvent,
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeManager;
 use crate::code::editor_management::CodeSource;
+use crate::code_review::code_review_view::CodeReviewAction;
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
 use crate::drive::export::ExportManager;
 use crate::drive::settings::WarpDriveSettings;
@@ -8170,6 +8171,13 @@ impl Workspace {
                     self.right_panel_view.as_ref(ctx).selected_repo_path() == Some(target_repo_path)
                 });
         if panel_already_showing_repo {
+            // The diff chip is the user's toggle handle: a second click on the
+            // same chip closes the pane. Other entrypoints (agent-mode
+            // auto-open, slash command, etc.) intentionally stay open so they
+            // don't fight with whatever opened them.
+            if panel_context.entrypoint == CodeReviewPaneEntrypoint::GitDiffChip {
+                self.close_right_panel(&pane_group, ctx);
+            }
             return;
         }
 
@@ -14238,6 +14246,22 @@ impl Workspace {
             }
             pane_group::Event::OpenCodeReviewPane(arg) => {
                 self.open_code_review_panel_from_arg(arg, pane_group.clone(), ctx);
+            }
+            pane_group::Event::OpenCommitDialog(arg) => {
+                self.open_code_review_panel_from_arg(arg, pane_group.clone(), ctx);
+                let Some(repo_path) = &arg.repo_path else {
+                    return;
+                };
+                let Some(code_review_view) = self
+                    .working_directories_model
+                    .as_ref(ctx)
+                    .get_code_review_view(pane_group.id(), repo_path)
+                else {
+                    return;
+                };
+                code_review_view.update(ctx, |code_review, ctx| {
+                    code_review.handle_action(&CodeReviewAction::OpenCommitDialog, ctx);
+                });
             }
             pane_group::Event::ToggleCodeReviewPane(arg) => {
                 self.toggle_right_panel(&pane_group, ctx);

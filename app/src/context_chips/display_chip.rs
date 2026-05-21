@@ -10,6 +10,7 @@ use crate::ai::{
 use crate::code::editor::{add_color, remove_color};
 use crate::code_review::code_review_view::CODE_REVIEW_TOOLTIP_TEXT;
 use crate::code_review::diff_state::DiffStats;
+use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
 use crate::context_chips::git_branch_on_click::{
     is_plausible_new_branch_name, GitBranchOnClickValue, GitWorktreeOnClickValue,
 };
@@ -22,6 +23,7 @@ use crate::terminal::input::{MenuPositioning, MenuPositioningProvider};
 use crate::terminal::model::session::SessionType;
 use crate::terminal::model_events::ModelEventDispatcher;
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
+use crate::terminal::view::TerminalAction;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
 use crate::util::bindings::keybinding_name_to_display_string;
@@ -1418,7 +1420,7 @@ impl DisplayChip {
                     let tool_tip = appearance
                         .ui_builder()
                         .tool_tip_with_sublabel(
-                            CODE_REVIEW_TOOLTIP_TEXT.to_string(),
+                            format!("{CODE_REVIEW_TOOLTIP_TEXT} · right-click to commit"),
                             code_review_keybinding.clone(),
                         )
                         .build()
@@ -1429,6 +1431,11 @@ impl DisplayChip {
             })
             .on_click(|ctx, _app, _position| {
                 ctx.dispatch_typed_action(DisplayChipAction::ToggleCodeReview);
+            })
+            .on_right_click(|ctx, _app, _position| {
+                ctx.dispatch_typed_action(TerminalAction::OpenCommitDialog {
+                    entrypoint: CodeReviewPaneEntrypoint::GitDiffChip,
+                });
             })
             .with_cursor(Cursor::PointingHand)
             .finish()

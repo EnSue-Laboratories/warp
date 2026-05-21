@@ -2304,22 +2304,60 @@ impl AIClient for ServerApi {
         request: GenerateCodeReviewContentRequest,
     ) -> Result<GenerateCodeReviewContentResponse, anyhow::Error> {
         let auth_token = self.get_or_refresh_access_token().await?;
-        let request_builder = self.client.post(format!(
+        // The `/ai/generate_code_review_content` route only matches when the
+        // request carries an Authorization header — without one it falls
+        // through to the SPA catch-all and we get back the marketing landing
+        // page HTML (which then fails JSON decoding). Bail with a clearer
+        // message before sending an obviously-doomed request.
+        let Some(bearer) = auth_token.as_bearer_token() else {
+            anyhow::bail!(
+                "Sign in to Warp to use AI commit-message generation \
+                 (no auth token available)."
+            );
+        };
+        let endpoint = format!(
             "{}/ai/generate_code_review_content",
             ChannelState::server_root_url()
-        ));
-        let response = if let Some(token) = auth_token.as_bearer_token() {
-            request_builder.bearer_auth(token)
-        } else {
-            request_builder
+        );
+        let http_response = self
+            .client
+            .post(&endpoint)
+            .bearer_auth(bearer)
+            .json(&request)
+            .send()
+            .await?;
+        let status = http_response.status();
+        let content_type = http_response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = http_response.bytes().await?;
+        if !status.is_success() {
+            let preview: String = String::from_utf8_lossy(&bytes).chars().take(400).collect();
+            anyhow::bail!(
+                "AI request failed: {status} (content-type={content_type:?}). Body preview: {preview}"
+            );
         }
-        .json(&request)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-        Ok(response)
+        // Diagnose the "200 OK but HTML" case — the public surface returns
+        // the SPA landing page when a route doesn't exist there, which yields
+        // a generic JSON decode error. Pick that up explicitly so the log /
+        // error message tells the user what actually happened.
+        if content_type.starts_with("text/html") {
+            anyhow::bail!(
+                "AI endpoint returned the SPA page instead of JSON — the route appears unavailable on this server ({endpoint})."
+            );
+        }
+        match serde_json::from_slice::<GenerateCodeReviewContentResponse>(&bytes) {
+            Ok(response) => Ok(response),
+            Err(err) => {
+                let preview: String = String::from_utf8_lossy(&bytes).chars().take(400).collect();
+                anyhow::bail!(
+                    "AI response decode failed: {err}. Status {status}, content-type={content_type:?}. Body preview: {preview}"
+                );
+            }
+        }
     }
 }
 
