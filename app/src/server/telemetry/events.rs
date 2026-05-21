@@ -1145,7 +1145,8 @@ impl From<AgentViewEntryOrigin> for TelemetryAgentViewEntryOrigin {
             AgentViewEntryOrigin::ThirdPartyCloudAgent => Self::ThirdPartyCloudAgent,
             AgentViewEntryOrigin::Cli => Self::Cli,
             AgentViewEntryOrigin::ImageAdded => Self::ImageAdded,
-            AgentViewEntryOrigin::SlashCommand { .. } => Self::SlashCommand,
+            AgentViewEntryOrigin::SlashCommand { .. }
+            | AgentViewEntryOrigin::DisposableSlashCommand { .. } => Self::SlashCommand,
             AgentViewEntryOrigin::CodeReviewContext => Self::CodeReviewContext,
             AgentViewEntryOrigin::LongRunningCommand => Self::LongRunningCommand,
             AgentViewEntryOrigin::ContinueConversationButton => Self::ContinueConversationButton,

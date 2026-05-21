@@ -13,19 +13,32 @@ use crate::search::slash_command_menu::StaticCommand;
 
 /// Personal-fork shortcut: `!foo` is treated as `/agent foo`. The input buffer keeps
 /// the `!` so the user sees what they typed; only the parser sees the rewritten form.
-const BANG_PREFIX: char = '!';
+pub(crate) const BANG_PREFIX: char = '!';
 
-/// If `text` starts with `!`, return the `/agent`-rewritten form for parsing.
-fn bang_rewritten(text: &str) -> Option<String> {
-    let rest = text.strip_prefix(BANG_PREFIX)?;
+/// Personal-fork shortcut: `?foo` is the disposable variant — same routing as `!foo`,
+/// but the resulting conversation is deleted on exit instead of persisted.
+pub(crate) const DISPOSABLE_PREFIX: char = '?';
+
+/// Returns `true` if `c` is one of our personal-fork agent shorthand prefixes.
+fn is_agent_shorthand_prefix(c: char) -> bool {
+    c == BANG_PREFIX || c == DISPOSABLE_PREFIX
+}
+
+/// If `text` starts with one of our shorthand prefixes, return the `/agent`-rewritten
+/// form for parsing along with whether the disposable variant was used.
+fn agent_shorthand_rewritten(text: &str) -> Option<(String, bool)> {
+    let mut chars = text.chars();
+    let prefix = chars.next().filter(|c| is_agent_shorthand_prefix(*c))?;
+    let rest = &text[prefix.len_utf8()..];
     let agent_name = AGENT.name;
-    Some(if rest.is_empty() {
+    let rewritten = if rest.is_empty() {
         agent_name.to_owned()
     } else if rest.starts_with(' ') {
         format!("{agent_name}{rest}")
     } else {
         format!("{agent_name} {rest}")
-    })
+    };
+    Some((rewritten, prefix == DISPOSABLE_PREFIX))
 }
 use crate::settings::InputSettings;
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
@@ -48,6 +61,11 @@ pub struct DetectedCommand {
     ///
     /// If there is no trailing space after the command, then `None`.
     pub argument: Option<String>,
+
+    /// Personal-fork: set when the command was triggered via the disposable `?` shorthand.
+    /// Only meaningful for the AGENT command; downstream callers route this to a different
+    /// `AgentViewEntryOrigin` so the conversation can be cleaned up on exit.
+    pub is_disposable: bool,
 }
 
 /// A detected skill command in the input buffer.
@@ -107,8 +125,11 @@ impl SlashCommandEntryState {
     pub fn command_prefix_highlight_len(&self, buffer_text: &str) -> Option<usize> {
         match self {
             SlashCommandEntryState::SlashCommand(detected) => {
-                if buffer_text.starts_with(BANG_PREFIX) && detected.command.name == AGENT.name {
-                    Some(BANG_PREFIX.len_utf8())
+                let first_char = buffer_text.chars().next();
+                if detected.command.name == AGENT.name
+                    && first_char.is_some_and(is_agent_shorthand_prefix)
+                {
+                    first_char.map(|c| c.len_utf8())
                 } else {
                     buffer_text
                         .starts_with(detected.command.name)
@@ -248,14 +269,17 @@ impl SlashCommandModel {
     /// Use this when you have a prompt string and need to know whether it is
     /// a slash command, skill command, or plain text.
     pub fn detect_command(&self, text: &str, ctx: &AppContext) -> SlashCommandEntryState {
-        if let Some(rewritten) = bang_rewritten(text) {
-            // `!` is shorthand for `/agent`. Only resolves if AGENT is in the active set
+        if let Some((rewritten, is_disposable)) = agent_shorthand_rewritten(text) {
+            // `!` / `?` are shorthand for `/agent`. Only resolves if AGENT is in the active set
             // (e.g., AI is enabled); otherwise treat as plain text rather than composing.
             return self
                 .data_source
                 .as_ref(ctx)
                 .parse_slash_command(&rewritten)
-                .map(SlashCommandEntryState::SlashCommand)
+                .map(|mut detected| {
+                    detected.is_disposable = is_disposable;
+                    SlashCommandEntryState::SlashCommand(detected)
+                })
                 .unwrap_or(SlashCommandEntryState::None);
         }
         if !text.starts_with('/') {
@@ -344,11 +368,13 @@ impl SlashCommandModel {
             return;
         }
 
-        // If the state is disabled but the buffer now starts with '/' (or our `!` agent
-        // shortcut), re-evaluate. This handles the case where the user types a query with
-        // `/` (disabling slash commands), then edits the buffer to insert `/plan ` or
-        // `!foo` at the beginning.
-        let is_trigger_prefix = |s: &str| s.starts_with('/') || s.starts_with(BANG_PREFIX);
+        // If the state is disabled but the buffer now starts with '/' (or our `!`/`?`
+        // agent shortcuts), re-evaluate. This handles the case where the user types a
+        // query with `/` (disabling slash commands), then edits the buffer to insert
+        // `/plan `, `!foo`, or `?foo` at the beginning.
+        let is_trigger_prefix = |s: &str| {
+            s.starts_with('/') || s.chars().next().is_some_and(is_agent_shorthand_prefix)
+        };
         let did_add_trigger = is_trigger_prefix(new) && !is_trigger_prefix(old);
         if self.state.is_disabled() && !did_add_trigger {
             return;
@@ -499,6 +525,7 @@ impl SlashCommandDataSource {
         Some(DetectedCommand {
             command: matched_command,
             argument: possible_argument,
+            is_disposable: false,
         })
     }
 }

@@ -139,6 +139,12 @@ pub enum AgentViewEntryOrigin {
     SlashCommand {
         trigger: SlashCommandTrigger,
     },
+    /// Personal-fork: entered via the `?` shorthand for a disposable agent session. The
+    /// conversation is deleted (locally and from the cloud) when the user exits agent view,
+    /// regardless of whether it had exchanges.
+    DisposableSlashCommand {
+        trigger: SlashCommandTrigger,
+    },
     SlashInit,
     CreateEnvironment,
     /// Entered agent view by executing a slash command that requires agent mode.
@@ -212,6 +218,11 @@ impl AgentViewEntryOrigin {
                 was_prompt_autodetected,
             } if *was_prompt_autodetected => AutoTriggerBehavior::Always,
             AgentViewEntryOrigin::SlashCommand { trigger } if !trigger.is_keybinding() => {
+                AutoTriggerBehavior::Always
+            }
+            AgentViewEntryOrigin::DisposableSlashCommand { trigger }
+                if !trigger.is_keybinding() =>
+            {
                 AutoTriggerBehavior::Always
             }
             AgentViewEntryOrigin::Cli => AutoTriggerBehavior::Always,

@@ -173,7 +173,12 @@ impl Input {
         }
         if command.argument.as_ref().is_none() {
             self.execute_slash_command(
-                command, None, trigger, /*is_queued_prompt*/ false, ctx,
+                command,
+                None,
+                trigger,
+                /*is_queued_prompt*/ false,
+                /*is_disposable*/ false,
+                ctx,
             );
         } else if command
             .argument
@@ -182,25 +187,34 @@ impl Input {
         {
             // TODO (zachbai): this is a hack for Oz launch. Caller
             // should probably be invoking `execute_slash_command` in this case.
-            let argument = if !self.suggestions_mode_model.as_ref(ctx).is_slash_commands() {
-                let buffer = self.buffer_text(ctx);
-                // `!foo` is shorthand for `/agent foo`; strip the bang when this command is
-                // triggered via keybinding while the buffer is in shorthand form.
-                let stripped = if command.name == commands::AGENT.name {
-                    buffer.strip_prefix('!').unwrap_or(&buffer)
+            // Personal-fork: when the AGENT command is triggered via keybinding while the
+            // buffer is in `!foo` / `?foo` shorthand, strip the prefix and infer disposability
+            // from `?`.
+            let (argument, is_disposable) =
+                if !self.suggestions_mode_model.as_ref(ctx).is_slash_commands() {
+                    let buffer = self.buffer_text(ctx);
+                    let (stripped, disposable) = if command.name == commands::AGENT.name {
+                        if let Some(rest) = buffer.strip_prefix('?') {
+                            (rest, true)
+                        } else if let Some(rest) = buffer.strip_prefix('!') {
+                            (rest, false)
+                        } else {
+                            (buffer.as_str(), false)
+                        }
+                    } else {
+                        (buffer.as_str(), false)
+                    };
+                    let trimmed = stripped.trim().to_owned();
+                    ((!trimmed.is_empty()).then_some(trimmed), disposable)
                 } else {
-                    buffer.as_str()
+                    (None, false)
                 };
-                let trimmed = stripped.trim().to_owned();
-                (!trimmed.is_empty()).then_some(trimmed)
-            } else {
-                None
-            };
             self.execute_slash_command(
                 command,
                 argument.as_ref(),
                 trigger,
                 /*is_queued_prompt*/ false,
+                is_disposable,
                 ctx,
             );
         } else {
@@ -375,6 +389,10 @@ impl Input {
         argument: Option<&String>,
         trigger: SlashCommandTrigger,
         is_queued_prompt: bool,
+        // Personal-fork: when true, route the resulting agent conversation through the
+        // `DisposableSlashCommand` origin so it gets cleaned up on exit. Only meaningful
+        // for AGENT; ignored by other commands.
+        is_disposable: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         fn show_error_toast(message: String, ctx: &mut ViewContext<Input>) {
@@ -454,10 +472,15 @@ impl Input {
                     }
                 });
 
+                let origin = if is_disposable && command.name == commands::AGENT.name {
+                    AgentViewEntryOrigin::DisposableSlashCommand { trigger }
+                } else {
+                    AgentViewEntryOrigin::SlashCommand { trigger }
+                };
                 ctx.emit(Event::EnterAgentView {
                     initial_prompt: prompt,
                     conversation_id: None,
-                    origin: AgentViewEntryOrigin::SlashCommand { trigger },
+                    origin,
                 });
             }
             cloud_agent if command.name == commands::CLOUD_AGENT.name => {
@@ -1179,6 +1202,7 @@ impl Input {
             SlashCommandEntryState::SlashCommand(detected_command) => {
                 let command = detected_command.command.clone();
                 let argument = detected_command.argument.clone();
+                let is_disposable = detected_command.is_disposable;
                 if !self.is_slash_command_available(&command, ctx) {
                     return false;
                 }
@@ -1187,6 +1211,7 @@ impl Input {
                     argument.as_ref(),
                     SlashCommandTrigger::cmd_or_ctrl_enter(),
                     /*is_queued_prompt*/ false,
+                    is_disposable,
                     ctx,
                 )
             }
@@ -1280,6 +1305,7 @@ impl Input {
             SlashCommandEntryState::SlashCommand(detected_command) => {
                 let command = detected_command.command.clone();
                 let argument = detected_command.argument.clone();
+                let is_disposable = detected_command.is_disposable;
                 if !self.is_slash_command_available(&command, ctx) {
                     return false;
                 }
@@ -1288,6 +1314,7 @@ impl Input {
                     argument.as_ref(),
                     SlashCommandTrigger::input(),
                     /*is_queued_prompt*/ false,
+                    is_disposable,
                     ctx,
                 )
             }

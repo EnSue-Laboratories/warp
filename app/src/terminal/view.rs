@@ -3322,6 +3322,21 @@ impl TerminalView {
                             false, // Empty new conversations were never synced to the cloud.
                             ctx,
                         );
+                    } else if matches!(
+                        origin,
+                        AgentViewEntryOrigin::DisposableSlashCommand { .. }
+                    ) && !is_child_agent
+                    {
+                        // Personal-fork: `?foo` shorthand opens a one-shot agent session
+                        // that vanishes when the user exits, regardless of how many
+                        // exchanges it accumulated. delete_from_cloud=true because the
+                        // exchanges may have synced.
+                        conversation_utils::remove_conversation(
+                            *conversation_id,
+                            me.view_id,
+                            true,
+                            ctx,
+                        );
                     }
 
                     // This handles the case where the user has taken over control but the command is still in progress.
@@ -3337,14 +3352,27 @@ impl TerminalView {
                     let has_existing_lrc_block =
                         me.has_existing_lrc_agent_view_block(*conversation_id);
 
-                    let should_insert = (!me
-                        .last_visible_item_is_agent_view_block_for_conversation(*conversation_id)
-                        && (has_init_steps || was_modified)
-                        && !is_exit_due_to_user_takeover_of_lrc
-                        && !has_existing_lrc_block)
-                        // If the agent view was entered via accepting a 'new conversation
-                        // speedbump', an entry block should always be inserted.
-                        || matches!(origin, AgentViewEntryOrigin::AgentRequestedNewConversation);
+                    // Personal-fork: disposable `?` sessions are deleted on exit, so don't
+                    // leave behind a breadcrumb entry block pointing at a now-deleted
+                    // conversation in the terminal blocklist.
+                    let is_disposable_origin = matches!(
+                        origin,
+                        AgentViewEntryOrigin::DisposableSlashCommand { .. }
+                    );
+                    let should_insert = !is_disposable_origin
+                        && ((!me
+                            .last_visible_item_is_agent_view_block_for_conversation(
+                                *conversation_id,
+                            )
+                            && (has_init_steps || was_modified)
+                            && !is_exit_due_to_user_takeover_of_lrc
+                            && !has_existing_lrc_block)
+                            // If the agent view was entered via accepting a 'new conversation
+                            // speedbump', an entry block should always be inserted.
+                            || matches!(
+                                origin,
+                                AgentViewEntryOrigin::AgentRequestedNewConversation
+                            ));
                     if should_insert {
                         me.insert_agent_view_entry_block(
                             AgentViewEntryBlockParams {
