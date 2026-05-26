@@ -1,0 +1,103 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Warp release channel to bundle.
+        required: true
+        type: choice
+        default: dev
+        options:
+          - local
+          - dev
+          - preview
+          - stable
+          - oss
+      arch:
+        description: Windows target architecture.
+        required: true
+        type: choice
+        default: x64
+        options:
+          - x64
+          - arm64
+      release_tag:
+        description: Installer version string. Defaults to ensue-agent-<run number>.
+        required: false
+        type: string
+      run_check_only:
+        description: Run bundle.ps1 -CHECK_ONLY before building the installer.
+        required: true
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-installer:
+    name: Build Windows installer (${{ inputs.channel }}, ${{ inputs.arch }})
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          lfs: true
+
+      - name: Prepare Windows build environment
+        uses: ./.github/actions/prepare_environment
+        with:
+          target_os: windows
+          cache_key: windows-installer-${{ inputs.arch }}
+          is_self_hosted: false
+          install_release_deps: false
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Add arm64 Rust target
+        if: ${{ inputs.arch == 'arm64' }}
+        shell: pwsh
+        run: rustup target add aarch64-pc-windows-msvc
+
+      - name: Compute release tag
+        id: release-tag
+        shell: pwsh
+        run: |
+          $ReleaseTag = '${{ inputs.release_tag }}'
+          if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+            $ReleaseTag = "ensue-agent-$env:GITHUB_RUN_NUMBER"
+          }
+          "value=$ReleaseTag" >> $env:GITHUB_OUTPUT
+
+      - name: Check installer build
+        if: ${{ inputs.run_check_only }}
+        shell: pwsh
+        run: |
+          .\script\windows\bundle.ps1 `
+            -CHECK_ONLY `
+            -CHANNEL '${{ inputs.channel }}' `
+            -ARCH '${{ inputs.arch }}' `
+            -RELEASE_TAG '${{ steps.release-tag.outputs.value }}'
+
+      - name: Build installer
+        id: bundle
+        shell: pwsh
+        run: |
+          .\script\windows\bundle.ps1 `
+            -CHANNEL '${{ inputs.channel }}' `
+            -ARCH '${{ inputs.arch }}' `
+            -RELEASE_TAG '${{ steps.release-tag.outputs.value }}'
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.1
+        with:
+          name: warp-${{ inputs.channel }}-${{ inputs.arch }}-${{ steps.release-tag.outputs.value }}
+          path: ${{ steps.bundle.outputs.installer_path }}
+          if-no-files-found: error
