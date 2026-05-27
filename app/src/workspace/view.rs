@@ -22116,6 +22116,12 @@ impl TypedActionView for Workspace {
                     // `CrossWindowTabDrag::pending_source_window_closes`.
                 }
             }
+            DropTabAsPaneInActiveTab => {
+                // Stub: drag UI is wired in a follow-up. The action exists so the
+                // backend handler is callable in isolation for tests; the cross-window
+                // drag state machine will dispatch this action in the next change.
+                self.drop_source_pane_group_as_pane_in_active_tab(ctx);
+            }
             CopyAccessTokenToClipboard => {
                 // Blocking is ok here only because this action is only registered in dev and local
                 // builds to aid in debugging and development.
@@ -24846,6 +24852,29 @@ impl Workspace {
 
     /// Transfers a dragged tab into the attach target's window by delegating
     /// to the appropriate `CrossWindowTabDrag::execute_handoff_*` variant.
+    /// Stub for the tab-body drop handler. The action variant is wired in the
+    /// `WorkspaceAction` match so the dispatch path compiles end-to-end, but the
+    /// drag hit-testing in `cross_window_tab_drag.rs` does not yet dispatch this
+    /// action. When that lands, this method should:
+    ///   1. Locate the source `PaneGroup` via [`CrossWindowTabDrag`] (preview
+    ///      window for multi-tab drags, source window for single-tab drags).
+    ///   2. Transfer its view tree into this window via
+    ///      `ctx.transfer_view_tree_to_window` if it lives elsewhere.
+    ///   3. Call `active_tab_pane_group().absorb_pane_group(source, focused,
+    ///      Direction::Right, ctx)` so its panes become siblings of the focused
+    ///      pane in the destination's active tab.
+    ///   4. Trigger source cleanup (close preview window for multi-tab drag,
+    ///      close source window for single-tab drag).
+    ///
+    /// The data-model primitive is already in place — see
+    /// [`PaneGroup::absorb_pane_group`].
+    fn drop_source_pane_group_as_pane_in_active_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        log::warn!(
+            "drop_source_pane_group_as_pane_in_active_tab: action received on window_id={} but drag UI not yet wired",
+            ctx.window_id()
+        );
+    }
+
     fn perform_handoff(&mut self, target: AttachTarget, ctx: &mut ViewContext<Self>) {
         let caller_window_id = ctx.window_id();
 
