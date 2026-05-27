@@ -1,14 +1,31 @@
-use crate::default_terminal::DefaultTerminal;
-use crate::gpu_state::{GPUState, GPUStateEvent};
-use crate::terminal::input::OPEN_COMPLETIONS_KEYBINDING_NAME;
-#[cfg(feature = "local_tty")]
-use crate::terminal::session_settings::WorkingDirectoryConfig;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use ::settings::{Setting, ToggleableSetting};
 use lazy_static::lazy_static;
+use strum::IntoEnumIterator;
+use warp_core::channel::ChannelState;
 use warp_core::context_flag::ContextFlag;
-use warpui::platform::GraphicsBackend;
+use warp_core::semantic_selection::{
+    SemanticSelection, SemanticSelectionChangedEvent, SmartSelectEnabled,
+};
+use warpui::elements::{
+    Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss,
+    DispatchEventResult, Element, Empty, EventHandler, Fill, Flex, Hoverable, MainAxisAlignment,
+    MainAxisSize, MouseState, MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
+};
+use warpui::keymap::{ContextPredicate, FixedBinding, Keystroke};
+use warpui::platform::{Cursor, GraphicsBackend};
 use warpui::rendering::GPUPowerPreference;
-use warpui::{elements::DispatchEventResult, platform::Cursor};
+use warpui::ui_components::button::ButtonVariant;
+use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
+use warpui::ui_components::switch::SwitchStateHandle;
+use warpui::{
+    Action, AppContext, DisplayIdx, Entity, EventContext, ModelHandle, SingletonEntity, Tracked,
+    TypedActionView, View, ViewContext, ViewHandle, WindowId,
+};
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use {
     crate::settings::ForceX11, crate::settings::LinuxAppConfiguration,
@@ -19,40 +36,43 @@ use super::keybindings::KeyBindingModifyingState;
 #[cfg(feature = "local_tty")]
 use super::settings_page::render_sub_sub_header;
 use super::settings_page::{
-    add_setting, build_reset_button, render_body_item_label, render_dropdown_item_label,
-    render_local_only_icon, Category, LocalOnlyIconState, MatchData, PageType, SettingsWidget,
-    TOGGLE_BUTTON_RIGHT_PADDING,
+    add_setting, build_reset_button, build_toggle_element, render_body_item,
+    render_body_item_label, render_dropdown_item, render_dropdown_item_label,
+    render_local_only_icon, AdditionalInfo, Category, LocalOnlyIconState, MatchData, PageType,
+    SettingsPageMeta, SettingsPageViewHandle, SettingsWidget, ToggleState, CONTENT_FONT_SIZE,
+    HEADER_PADDING, TOGGLE_BUTTON_RIGHT_PADDING,
 };
-use super::settings_page::{
-    render_body_item, render_dropdown_item, AdditionalInfo, SettingsPageMeta,
-    SettingsPageViewHandle, ToggleState, CONTENT_FONT_SIZE, HEADER_PADDING,
+use super::{
+    features, flags, render_beta_chip, DisplayCount, SettingsAction, SettingsSection,
+    ToggleSettingActionPair,
 };
-use super::{features, SettingsAction};
-use super::{flags, DisplayCount};
-use super::{SettingsSection, ToggleSettingActionPair};
+use crate::appearance::Appearance;
+use crate::default_terminal::DefaultTerminal;
 use crate::editor::{
-    Event as EditorEvent, SingleLineEditorOptions, TextOptions,
+    EditorView, Event as EditorEvent, SingleLineEditorOptions, TextOptions,
     ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME,
 };
+use crate::features::FeatureFlag;
+use crate::gpu_state::{GPUState, GPUStateEvent};
+use crate::root_view::QuakeModePinPosition;
 use crate::search::command_search::settings::{
     CommandSearchSettings, ShowGlobalWorkflowsInUniversalSearch,
 };
 use crate::server::telemetry::TelemetryEvent;
 use crate::settings::ai::AISettings;
+use crate::settings::native_preference::{NativePreferenceSettings, UserNativePreference};
 use crate::settings::{
-    AISettingsChangedEvent, ScrollSettingsChangedEvent, ShowChangelogAfterUpdate,
-    UserNativeRedirectPreference,
-};
-use crate::settings::{
-    AliasExpansionEnabled, AliasExpansionSettings, AppEditorSettings, AtContextMenuInTerminalMode,
-    AutocompleteSymbols, AutosuggestionKeybindingHint, ChangelogSettings, CloudPreferencesSettings,
-    CodeSettings, CommandCorrections, CompletionsOpenWhileTyping, CopyOnSelect, CtrlTabBehavior,
-    DefaultSessionMode, EnableSlashCommandsInTerminal, EnableSshWrapper, ErrorUnderliningEnabled,
-    ExtraMetaKeys, GPUSettings, GlobalHotkeyMode, InputSettings, InputSettingsChangedEvent,
+    AISettingsChangedEvent, AliasExpansionEnabled, AliasExpansionSettings, AppEditorSettings,
+    AtContextMenuInTerminalMode, AutocompleteSymbols, AutosuggestionKeybindingHint,
+    ChangelogSettings, CloudPreferencesSettings, CodeSettings, CommandCorrections,
+    CompletionsOpenWhileTyping, CopyOnSelect, CtrlTabBehavior, DefaultSessionMode,
+    EnableSlashCommandsInTerminal, EnableSshWrapper, ErrorUnderliningEnabled, ExtraMetaKeys,
+    GPUSettings, GlobalHotkeyMode, InputSettings, InputSettingsChangedEvent,
     LinuxSelectionClipboard, MiddleClickPasteEnabled, MouseScrollMultiplier,
     OutlineCodebaseSymbolsForAtContextMenu, PreferLowPowerGPU, PreferredGraphicsBackend,
-    QuakeModeSettings, ScrollSettings, SelectionSettings, ShowAutosuggestionIgnoreButton,
-    ShowTerminalInputMessageBar, SshSettings, SyntaxHighlighting, TabBehavior, VimModeEnabled,
+    QuakeModeSettings, ScrollSettings, ScrollSettingsChangedEvent, SelectionSettings,
+    ShowAutosuggestionIgnoreButton, ShowChangelogAfterUpdate, ShowTerminalInputMessageBar,
+    SshSettings, SyntaxHighlighting, TabBehavior, UserNativeRedirectPreference, VimModeEnabled,
     VimStatusBar, VimUnnamedSystemClipboard, DEFAULT_QUAKE_MODE_SIZE_PERCENTAGES,
     QUAKE_WINDOW_AUTOHIDE_SUPPORTED,
 };
@@ -63,17 +83,21 @@ use crate::terminal::general_settings::{
     AutoOpenCodeReviewPaneOnFirstAgentChange, GeneralSettings, LinkTooltip, LoginItem,
     QuitOnLastWindowClosed, RestoreSession, ShowWarningBeforeQuitting,
 };
+use crate::terminal::input::OPEN_COMPLETIONS_KEYBINDING_NAME;
 use crate::terminal::keys_settings::{
     ActivationHotkeyEnabled, CtrlTabBehaviorSetting, KeysSettings, KeysSettingsChangedEvent,
 };
 #[cfg(feature = "local_tty")]
 use crate::terminal::session_settings::StartupShellOverride;
+#[cfg(feature = "local_tty")]
+use crate::terminal::session_settings::WorkingDirectoryConfig;
 use crate::terminal::session_settings::{
     Notifications, NotificationsMode, NotificationsSettings, SessionSettings,
     SessionSettingsChangedEvent, ShouldConfirmCloseSession,
 };
 use crate::terminal::settings::{
-    MaximumGridSize, ShowTerminalZeroStateBlock, TerminalSettings, UseAudibleBell,
+    AsyncFindEnabled, MaximumGridSize, ShowTerminalZeroStateBlock, TerminalSettings,
+    TerminalSettingsChangedEvent, UseAudibleBell,
 };
 use crate::terminal::{BlockListSettings, SnackbarEnabled};
 use crate::undo_close::UndoCloseSettings;
@@ -82,36 +106,9 @@ use crate::util::bindings::{
     keybinding_name_to_display_string, reset_keybinding_to_default, set_custom_keybinding,
 };
 use crate::view_components::{Dropdown, DropdownItem, FilterableDropdown};
-use crate::workspace::tab_settings::{NewTabPlacement, TabSettings};
+use crate::workspace::tab_settings::{NewTabPlacement, TabSettings, TabSettingsChangedEvent};
 use crate::workspace::WorkspaceAction;
-use crate::{appearance::Appearance, settings::native_preference::NativePreferenceSettings};
-use crate::{editor::EditorView, settings::native_preference::UserNativePreference};
-use crate::{features::FeatureFlag, terminal::settings::TerminalSettingsChangedEvent};
 use crate::{report_if_error, send_telemetry_from_ctx, themes, GlobalResourceHandles};
-use crate::{root_view::QuakeModePinPosition, workspace::tab_settings::TabSettingsChangedEvent};
-use ::settings::{Setting, ToggleableSetting};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use strum::IntoEnumIterator;
-use warp_core::channel::ChannelState;
-use warp_core::semantic_selection::{
-    SemanticSelection, SemanticSelectionChangedEvent, SmartSelectEnabled,
-};
-use warpui::elements::{
-    Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Dismiss,
-    Element, Empty, EventHandler, Fill, Flex, Hoverable, MainAxisAlignment, MainAxisSize,
-    MouseState, MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
-};
-use warpui::keymap::{ContextPredicate, FixedBinding, Keystroke};
-use warpui::ui_components::button::ButtonVariant;
-use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
-use warpui::ui_components::switch::SwitchStateHandle;
-use warpui::{
-    Action, AppContext, DisplayIdx, Entity, EventContext, ModelHandle, SingletonEntity, Tracked,
-    TypedActionView, View, ViewContext, ViewHandle, WindowId,
-};
 
 cfg_if::cfg_if! {
     if #[cfg(target_os = "macos")] {
@@ -564,6 +561,7 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
 #[derive(Clone, Debug)]
 pub enum FeaturesPageAction {
     ToggleCopyOnSelect,
+    ToggleAsyncFind,
     ToggleNotifications,
     ToggleRestoreSession,
     ToggleAutocompleteSymbols,
@@ -1154,6 +1152,10 @@ impl FeaturesPageAction {
             Self::ToggleAgentInAppNotifications => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleAgentInAppNotifications".to_string(),
                 value: to_string(*AISettings::as_ref(ctx).show_agent_notifications),
+            },
+            Self::ToggleAsyncFind => TelemetryEvent::FeaturesPageAction {
+                action: "ToggleAsyncFind".to_string(),
+                value: to_string(*TerminalSettings::as_ref(ctx).async_find_enabled),
             },
         }
     }
@@ -1910,6 +1912,13 @@ impl TypedActionView for FeaturesPageView {
                     default_terminal.make_warp_default(ctx);
                 });
             }
+            ToggleAsyncFind => {
+                TerminalSettings::handle(ctx).update(ctx, |terminal_settings, ctx| {
+                    report_if_error!(terminal_settings
+                        .async_find_enabled
+                        .toggle_and_save_value(ctx));
+                });
+            }
         }
 
         send_telemetry_from_ctx!(action.telemetry_event(ctx), ctx);
@@ -2513,6 +2522,11 @@ impl FeaturesPageView {
         if DefaultTerminal::can_warp_become_default() {
             general_widgets.push(Box::new(DefaultTerminalWidget::default()));
         }
+
+        // The widget is the opt-in surface for channels where `FeatureFlag::AsyncFind`
+        // is off. Channels with the flag on force the feature on and hide the toggle
+        // entirely; see `TerminalSettings::is_async_find_enabled`.
+        general_widgets.push(Box::new(AsyncFindWidget::default()));
 
         let app_editor_settings = AppEditorSettings::as_ref(ctx);
 
@@ -7259,5 +7273,75 @@ impl SettingsWidget for GraphicsBackendWidget {
             );
         }
         col.finish()
+    }
+}
+
+#[derive(Default)]
+struct AsyncFindWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for AsyncFindWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "async asynchronous fast find search"
+    }
+
+    fn should_render(&self, _app: &AppContext) -> bool {
+        // Here, the feature flag being enabled means the feature is force-enabled,
+        // so we don't need to render the toggle.
+        !FeatureFlag::AsyncFind.is_enabled()
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ui_builder = appearance.ui_builder();
+
+        let label = render_body_item_label::<FeaturesPageAction>(
+            "Asynchronous find".into(),
+            None,
+            None,
+            LocalOnlyIconState::for_setting(
+                AsyncFindEnabled::storage_key(),
+                AsyncFindEnabled::sync_to_cloud(),
+                &mut view
+                    .button_mouse_states
+                    .local_only_icon_tooltip_states
+                    .borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+        );
+
+        let label_with_chip = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(label)
+            .with_child(render_beta_chip(appearance))
+            .finish();
+
+        let switch = ui_builder
+            .switch(self.switch_state.clone())
+            .check(*TerminalSettings::as_ref(app).async_find_enabled)
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(FeaturesPageAction::ToggleAsyncFind);
+            })
+            .finish();
+
+        build_toggle_element(
+            label_with_chip,
+            switch,
+            appearance,
+            Some(
+                "Use an improved implementation of find to keep the UI responsive while searching for matches on large outputs."
+                    .into(),
+            ),
+        )
     }
 }

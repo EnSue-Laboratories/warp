@@ -3,10 +3,9 @@ use super::{
     truncate_from_beginning, CreateGitBranch, GitLineChanges, GitWorktree,
 };
 use crate::context_chips::display_menu::GenericMenuItem;
-use crate::context_chips::{
-    git_branch_on_click::{GitBranchOnClickValue, GitWorktreeOnClickValue},
-    github_pr_display_text_from_url, ContextChipKind,
-};
+use crate::context_chips::git_branch_on_click::{GitBranchOnClickValue, GitWorktreeOnClickValue};
+use crate::context_chips::{github_pr_display_text_from_url, ContextChipKind};
+use crate::ui_components::icons::Icon;
 
 #[test]
 fn test_github_pr_display_text_from_url() {
