@@ -22122,6 +22122,9 @@ impl TypedActionView for Workspace {
                 // drag state machine will dispatch this action in the next change.
                 self.drop_source_pane_group_as_pane_in_active_tab(ctx);
             }
+            CollapseTabToPane(tab_index) => {
+                self.collapse_tab_to_pane_in_active_tab(*tab_index, ctx);
+            }
             CopyAccessTokenToClipboard => {
                 // Blocking is ok here only because this action is only registered in dev and local
                 // builds to aid in debugging and development.
@@ -24863,6 +24866,70 @@ impl Workspace {
             "drop_source_pane_group_as_pane_in_active_tab: command-palette entry not yet implemented (window_id={})",
             ctx.window_id()
         );
+    }
+
+    /// Handler for `WorkspaceAction::CollapseTabToPane(tab_index)` — the
+    /// "Collapse to Pane in Active Tab" context-menu item on a tab.
+    ///
+    /// Absorbs every visible pane from `self.tabs[tab_index]`'s `PaneGroup`
+    /// into the active tab's `PaneGroup`, each split off the active tab's
+    /// focused pane in `Direction::Right`. The source tab is then removed
+    /// without an undo entry (its panes now live in the destination — the
+    /// source's `PaneGroup` is left empty, so a normal close would tear
+    /// down nothing useful).
+    ///
+    /// No-ops when:
+    /// - `tab_index` is out of range,
+    /// - `tab_index` is the currently-active tab (nothing to collapse into
+    ///   self),
+    /// - there's only one tab (no destination).
+    fn collapse_tab_to_pane_in_active_tab(
+        &mut self,
+        tab_index: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.tabs.len() < 2 {
+            log::info!(
+                "collapse_tab_to_pane: skipped (only {} tab(s))",
+                self.tabs.len()
+            );
+            return;
+        }
+        if tab_index >= self.tabs.len() {
+            log::warn!(
+                "collapse_tab_to_pane: tab_index={tab_index} out of range (len={})",
+                self.tabs.len()
+            );
+            return;
+        }
+        if tab_index == self.active_tab_index {
+            log::info!("collapse_tab_to_pane: skipped (source == active tab)");
+            return;
+        }
+
+        let source_pane_group = self.tabs[tab_index].pane_group.clone();
+        let target_pane_group = self.active_tab_pane_group().clone();
+        let focused_pane = target_pane_group.read(ctx, |group, ctx| group.focused_pane_id(ctx));
+
+        // `target_pane_group != source_pane_group` is guaranteed by the
+        // tab_index != active_tab_index check above.
+        let absorbed = target_pane_group.update(ctx, |group, ctx| {
+            group.absorb_pane_group(
+                source_pane_group.clone(),
+                focused_pane,
+                crate::pane_group::Direction::Right,
+                ctx,
+            )
+        });
+        log::info!(
+            "collapse_tab_to_pane: absorbed {} pane(s) from tab_index={tab_index} into active_tab",
+            absorbed.len()
+        );
+
+        // The source tab's `PaneGroup` is now empty. Drop the tab without
+        // adding it to the undo stack — undoing wouldn't restore the panes
+        // since they now live in the active tab.
+        self.remove_tab_without_undo(tab_index, ctx);
     }
 
     /// Commits a "drop on pane body" cross-window drag. Mirrors the

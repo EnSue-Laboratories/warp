@@ -1015,34 +1015,14 @@ impl CrossWindowTabDrag {
             return drag_result;
         }
 
-        // No tab-bar hit. Check if the cursor is over a window's pane-body
-        // area — if so, enter HoveringPaneBody so a drop here absorbs the
-        // source PaneGroup as a pane in the target's active tab. Same
-        // deferred-transfer pattern as GhostInTarget: no view-tree movement
-        // until drop.
-        if let Some(target_window_id) =
-            cross_window_pane_body_target(drag_center_on_screen, preview_window_id, ctx)
-        {
-            let Some(drag) = self.active_drag.as_mut() else {
-                return drag_result;
-            };
-            log::info!(
-                "tab_drag: on_drag_while_floating -> HoveringPaneBody target_wid={target_window_id} caller_wid={caller_window_id}"
-            );
-            drag.phase = DragPhase::HoveringPaneBody { target_window_id };
-
-            // Bring the target to the front for visual confirmation. Keep the
-            // preview visible (alpha 1.0) so the user can see what they're
-            // dragging — pane-body drop is a more deliberate gesture than a
-            // tab-bar slot insertion, so a faded preview would be confusing.
-            ctx.windows().show_window_and_focus_app(target_window_id);
-
-            if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(target_window_id, ctx) {
-                ws.update(ctx, |_, ctx| ctx.notify());
-            }
-
-            return drag_result;
-        }
+        // (Pane-body drop is intentionally NOT triggered from drag — it
+        // conflicts with drag-to-new-window because the body area is
+        // "anywhere not the tab strip", which would steal drops the user
+        // intended for empty-space-becomes-new-window. The HoveringPaneBody
+        // phase + perform_pane_body_handoff are kept in this module as
+        // dead code for now; the same data-model primitive is exposed
+        // through a tab-context-menu "Collapse to Pane" action instead.)
+        let _ = preview_window_id;
 
         drag_result
     }
