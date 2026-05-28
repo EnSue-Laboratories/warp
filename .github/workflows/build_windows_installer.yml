@@ -56,7 +56,7 @@ jobs:
           target_os: windows
           cache_key: windows-installer-${{ inputs.arch }}
           is_self_hosted: false
-          install_release_deps: false
+          install_release_deps: true
 
       - name: Install Inno Setup
         shell: pwsh
