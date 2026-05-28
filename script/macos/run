@@ -109,6 +109,29 @@ fi
 echo "Adding rpath to support mac frameworks (e.g. Sentry)"
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$WARP_APP_PATH/Contents/MacOS/$WARP_BIN_NAME"
 
+# Copy the dock tile plugin into Contents/PlugIns/ and register it in the
+# Info.plist so the in-app icon-picker (Settings → Appearance → "Customize
+# your app icon") actually changes the dock icon at runtime. Without this,
+# set_app_icon() in app/src/appearance.rs logs "Failed to get dock tile
+# plugin bundle" and silently no-ops on every icon-change. The plugin was
+# built by app/build.rs and lives at target/<profile>/WarpDockTilePlugin.docktileplugin.
+# Mirrors the production bundling in script/macos/bundle.
+TARGET_PROFILE_DIR="${PROFILE:-debug}"
+DOCK_TILE_PLUGIN_SRC="${REPO_ROOT}/target/${TARGET_PROFILE_DIR}/WarpDockTilePlugin.docktileplugin"
+if [[ -d "$DOCK_TILE_PLUGIN_SRC" ]]; then
+  echo "Copying DockTilePlugin into bundle..."
+  mkdir -p "$WARP_APP_PATH/Contents/PlugIns"
+  rm -rf "$WARP_APP_PATH/Contents/PlugIns/WarpDockTilePlugin.docktileplugin"
+  cp -R "$DOCK_TILE_PLUGIN_SRC" "$WARP_APP_PATH/Contents/PlugIns/"
+  BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw "$WARP_APP_PATH/Contents/Info.plist" 2>/dev/null || echo "dev.warp.WarpOss")
+  plutil -insert NSDockTilePlugIn -string "WarpDockTilePlugin.docktileplugin" "$WARP_APP_PATH/Contents/Info.plist" 2>/dev/null \
+    || plutil -replace NSDockTilePlugIn -string "WarpDockTilePlugin.docktileplugin" "$WARP_APP_PATH/Contents/Info.plist"
+  plutil -insert MainAppBundleIdentifier -string "$BUNDLE_ID" "$WARP_APP_PATH/Contents/PlugIns/WarpDockTilePlugin.docktileplugin/Contents/Info.plist" 2>/dev/null \
+    || plutil -replace MainAppBundleIdentifier -string "$BUNDLE_ID" "$WARP_APP_PATH/Contents/PlugIns/WarpDockTilePlugin.docktileplugin/Contents/Info.plist"
+else
+  echo "Warning: DockTilePlugin not found at $DOCK_TILE_PLUGIN_SRC; app icon picker will not work." >&2
+fi
+
 export WARP_SCHEME_NAME
 export WARP_PLIST_PATH="$WARP_APP_PATH/Contents/Info.plist"
 ./script/update_plist

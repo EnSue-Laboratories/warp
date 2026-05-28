@@ -65,6 +65,15 @@ pub enum AppIcon {
     /// Previous default icon with solid blue background.
     #[schemars(description = "Warp 1")]
     WarpOne,
+    /// Custom OSS icon — sunset/twilight, dark navy with purple-orange glow.
+    #[schemars(description = "Sunset")]
+    Sunset,
+    /// Custom OSS icon — clean white background with purple mark.
+    #[schemars(description = "Snow")]
+    Snow,
+    /// Custom OSS icon — cosmic / nebula scene with planet.
+    #[schemars(description = "Galaxy")]
+    Galaxy,
 }
 
 impl std::fmt::Display for AppIcon {
@@ -87,6 +96,9 @@ impl std::fmt::Display for AppIcon {
             AppIcon::Starburst => "Starburst",
             AppIcon::Sticker => "Sticker",
             AppIcon::WarpOne => "Warp 1",
+            AppIcon::Sunset => "Sunset",
+            AppIcon::Snow => "Snow",
+            AppIcon::Galaxy => "Galaxy",
         };
         write!(f, "{value}")
     }
@@ -117,6 +129,9 @@ impl AppIconSettings {
             AppIcon::Starburst => "starburst",
             AppIcon::Sticker => "sticker",
             AppIcon::WarpOne => "blue",
+            AppIcon::Sunset => "sunset",
+            AppIcon::Snow => "snow",
+            AppIcon::Galaxy => "galaxy",
         }
     }
 }
