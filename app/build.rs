@@ -159,8 +159,9 @@ fn generate_channel_config_if_needed(target_family: &str, target_os: &str) {
 
     let config_bin = "warp-channel-config";
 
-    // Check if the config binary is available on PATH. If not, we can't generate embedded
-    // configs. This is expected for external contributors building Warp OSS.
+    // Check if the config binary is available on PATH. If not, generate a minimal
+    // OSS-compatible config so release_bundle builds in external forks still have
+    // files for the compile-time include_str! calls below.
     if Command::new(config_bin)
         .arg("--help")
         .stdout(std::process::Stdio::null())
@@ -168,6 +169,7 @@ fn generate_channel_config_if_needed(target_family: &str, target_os: &str) {
         .status()
         .is_err()
     {
+        write_fallback_channel_configs();
         return;
     }
 
@@ -212,6 +214,55 @@ fn generate_channel_config_if_needed(target_family: &str, target_os: &str) {
             panic!("Failed to write config to {}: {err}", config_path.display())
         });
     }
+}
+
+fn write_fallback_channel_configs() {
+    println!(
+        "cargo:warning=warp-channel-config not found; using OSS-compatible fallback channel configs"
+    );
+
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR must be set");
+    for (channel, app_name, logfile_name) in [
+        ("local", "WarpLocal", "warp-local.log"),
+        ("dev", "WarpDev", "warp-dev.log"),
+        ("stable", "Warp", "warp.log"),
+        ("preview", "WarpPreview", "warp-preview.log"),
+    ] {
+        let config_path = Path::new(&out_dir).join(format!("{channel}_config.json"));
+        fs::write(
+            &config_path,
+            fallback_channel_config_json(app_name, logfile_name),
+        )
+        .unwrap_or_else(|err| {
+            panic!(
+                "Failed to write fallback config to {}: {err}",
+                config_path.display()
+            )
+        });
+    }
+}
+
+fn fallback_channel_config_json(app_name: &str, logfile_name: &str) -> String {
+    format!(
+        r#"{{
+  "app_id": "dev.warp.{app_name}",
+  "logfile_name": "{logfile_name}",
+  "server_config": {{
+    "server_root_url": "https://app.warp.dev",
+    "rtc_server_url": "wss://rtc.app.warp.dev/graphql/v2",
+    "session_sharing_server_url": "wss://sessions.app.warp.dev",
+    "firebase_auth_api_key": "AIzaSyBdy3O3S9hrdayLJxJ7mriBR4qgUaUygAs"
+  }},
+  "oz_config": {{
+    "oz_root_url": "https://oz.warp.dev",
+    "workload_audience_url": null
+  }},
+  "telemetry_config": null,
+  "autoupdate_config": null,
+  "crash_reporting_config": null,
+  "mcp_static_config": null
+}}"#
+    )
 }
 
 fn get_build_profile_name() -> String {
