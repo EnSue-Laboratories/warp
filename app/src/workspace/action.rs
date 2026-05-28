@@ -275,6 +275,18 @@ pub enum WorkspaceAction {
         tab_position: RectF,
     },
     DropTab,
+    /// Cross-window-drag drop on a tab's pane-body area: instead of inserting the
+    /// dragged tab into the destination workspace's tab strip, absorb every pane
+    /// from its `PaneGroup` into the destination's active tab as siblings of the
+    /// focused pane, split right. The source tab then closes (or its window if it
+    /// was the only tab). Currently unused — kept for a future drag path.
+    DropTabAsPaneInActiveTab,
+    /// Collapse the tab at `tab_index` into the currently active tab by
+    /// absorbing each of its panes as siblings of the active tab's focused
+    /// pane, split right. The collapsed tab is then closed. Triggered from
+    /// the tab right-click context menu ("Collapse to Pane"). Same-workspace
+    /// only — no cross-window transfer involved.
+    CollapseTabToPane(usize),
     /// Toggles the left panel. In Code Mode V1 this toggles Warp Drive.
     /// In Code Mode V2 this toggles the left panel which contains both the project explorer and
     /// Warp Drive. This happens as explicit action from the user.
@@ -780,6 +792,8 @@ impl WorkspaceAction {
             | MoveTabLeft(_)
             | MoveTabRight(_)
             | DropTab
+            | DropTabAsPaneInActiveTab
+            | CollapseTabToPane(_)
             | RenameTab(_)
             | ResetTabName(_)
             | RenamePane(_)
@@ -888,6 +902,8 @@ impl WorkspaceAction {
             | OpenInExplorer { .. }
             | DragTab { .. }
             | StartTabDrag
+            | DropTabAsPaneInActiveTab
+            | CollapseTabToPane(_)
             | ToggleLeftPanel
             | ToggleWarpDrive
             | OpenWarpDrive

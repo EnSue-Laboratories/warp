@@ -115,7 +115,10 @@
         @"starburst": @"starburst",
         @"sticker": @"sticker",
         @"warpone": @"blue",
-        @"cow": @"cow"
+        @"cow": @"cow",
+        @"sunset": @"sunset",
+        @"snow": @"snow",
+        @"galaxy": @"galaxy"
     };
     
     NSString* fileName = mapping[cleanName];

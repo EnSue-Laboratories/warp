@@ -22116,6 +22116,15 @@ impl TypedActionView for Workspace {
                     // `CrossWindowTabDrag::pending_source_window_closes`.
                 }
             }
+            DropTabAsPaneInActiveTab => {
+                // Stub: drag UI is wired in a follow-up. The action exists so the
+                // backend handler is callable in isolation for tests; the cross-window
+                // drag state machine will dispatch this action in the next change.
+                self.drop_source_pane_group_as_pane_in_active_tab(ctx);
+            }
+            CollapseTabToPane(tab_index) => {
+                self.collapse_tab_to_pane_in_active_tab(*tab_index, ctx);
+            }
             CopyAccessTokenToClipboard => {
                 // Blocking is ok here only because this action is only registered in dev and local
                 // builds to aid in debugging and development.
@@ -24846,6 +24855,219 @@ impl Workspace {
 
     /// Transfers a dragged tab into the attach target's window by delegating
     /// to the appropriate `CrossWindowTabDrag::execute_handoff_*` variant.
+    /// Reserved entry point for command-palette / keybinding triggers that
+    /// want to absorb a dragged tab into the active tab as a pane. The drag
+    /// UI in `cross_window_tab_drag.rs` does NOT dispatch this — it goes
+    /// through `handle_drop_result(DropResult::DropIntoPaneBody)` directly
+    /// for better atomicity (handoff + finalize in one ViewContext frame).
+    /// Kept as a no-op so future tooling can call it without recompiling.
+    fn drop_source_pane_group_as_pane_in_active_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        log::info!(
+            "drop_source_pane_group_as_pane_in_active_tab: command-palette entry not yet implemented (window_id={})",
+            ctx.window_id()
+        );
+    }
+
+    /// Handler for `WorkspaceAction::CollapseTabToPane(tab_index)` — the
+    /// "Collapse to Pane in Active Tab" context-menu item on a tab.
+    ///
+    /// Absorbs every visible pane from `self.tabs[tab_index]`'s `PaneGroup`
+    /// into the active tab's `PaneGroup`, each split off the active tab's
+    /// focused pane in `Direction::Right`. The source tab is then removed
+    /// without an undo entry (its panes now live in the destination — the
+    /// source's `PaneGroup` is left empty, so a normal close would tear
+    /// down nothing useful).
+    ///
+    /// No-ops when:
+    /// - `tab_index` is out of range,
+    /// - `tab_index` is the currently-active tab (nothing to collapse into
+    ///   self),
+    /// - there's only one tab (no destination).
+    fn collapse_tab_to_pane_in_active_tab(
+        &mut self,
+        tab_index: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.tabs.len() < 2 {
+            log::info!(
+                "collapse_tab_to_pane: skipped (only {} tab(s))",
+                self.tabs.len()
+            );
+            return;
+        }
+        if tab_index >= self.tabs.len() {
+            log::warn!(
+                "collapse_tab_to_pane: tab_index={tab_index} out of range (len={})",
+                self.tabs.len()
+            );
+            return;
+        }
+        if tab_index == self.active_tab_index {
+            log::info!("collapse_tab_to_pane: skipped (source == active tab)");
+            return;
+        }
+
+        let source_pane_group = self.tabs[tab_index].pane_group.clone();
+        let target_pane_group = self.active_tab_pane_group().clone();
+        let focused_pane = target_pane_group.read(ctx, |group, ctx| group.focused_pane_id(ctx));
+
+        // `target_pane_group != source_pane_group` is guaranteed by the
+        // tab_index != active_tab_index check above.
+        let absorbed = target_pane_group.update(ctx, |group, ctx| {
+            group.absorb_pane_group(
+                source_pane_group.clone(),
+                focused_pane,
+                crate::pane_group::Direction::Right,
+                ctx,
+            )
+        });
+        log::info!(
+            "collapse_tab_to_pane: absorbed {} pane(s) from tab_index={tab_index} into active_tab",
+            absorbed.len()
+        );
+
+        // The source tab's `PaneGroup` is now empty. Drop the tab without
+        // adding it to the undo stack — undoing wouldn't restore the panes
+        // since they now live in the active tab.
+        self.remove_tab_without_undo(tab_index, ctx);
+    }
+
+    /// Commits a "drop on pane body" cross-window drag. Mirrors the
+    /// tab-bar [`perform_handoff`] structure but instead of inserting the
+    /// transferred `TransferredTab` as a new tab, it absorbs its panes into
+    /// the target workspace's active tab via [`PaneGroup::absorb_pane_group`].
+    ///
+    /// Called by [`handle_drop_result`] when the drop result is
+    /// [`DropResult::DropIntoPaneBody`]. The follow-up `finalize` call closes
+    /// the now-empty source window / preview, just like the tab-bar path.
+    fn perform_pane_body_handoff(
+        &mut self,
+        target_window_id: WindowId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let caller_window_id = ctx.window_id();
+        let has_dedicated_preview =
+            CrossWindowTabDrag::as_ref(ctx).has_dedicated_preview_window();
+        let source_tab_index = CrossWindowTabDrag::as_ref(ctx)
+            .transferred_tab_index()
+            .unwrap_or(0);
+
+        log::info!(
+            "tab_drag: perform_pane_body_handoff caller_wid={caller_window_id} target_wid={target_window_id} has_dedicated_preview={has_dedicated_preview} source_tab_index={source_tab_index}"
+        );
+
+        // Same-window drop on body: dragging a tab from this window's strip
+        // onto this same window's body. This is a no-op for v1 because the
+        // tab's PaneGroup is already in this workspace's tabs vec — moving
+        // it from being a tab to being a pane inside another tab of the
+        // same workspace requires tab-removal coordination we haven't done
+        // yet. For now, bail and let finalize close things up.
+        if target_window_id == caller_window_id {
+            log::warn!(
+                "tab_drag: perform_pane_body_handoff target==caller; same-window pane-body absorb not yet supported, falling through to finalize"
+            );
+            CrossWindowTabDrag::handle(ctx).update(ctx, |drag, _| drag.reset_to_floating());
+            return;
+        }
+
+        // Resolve the transferred tab from the source side. For multi-tab
+        // drags the tab lives in the dedicated preview window's tab 0; for
+        // single-tab drags it lives in the source workspace at
+        // `source_tab_index`.
+        let transferred_tab = if has_dedicated_preview {
+            // We can't directly read another workspace's preview from `self`
+            // without `WorkspaceRegistry`. Defer to the workspace registry.
+            let preview_workspace = {
+                let drag = CrossWindowTabDrag::as_ref(ctx);
+                let _ = drag; // suppress unused; we just need the borrow to drop
+                None::<ViewHandle<Workspace>>
+            };
+            let _ = preview_workspace;
+            // Approach: read from the registry-resolved preview via its window id.
+            // Source window id is exposed by CrossWindowTabDrag; for multi-tab the
+            // preview window id is internal — fall back to source_window_id which
+            // for single-tab IS the preview. For multi-tab we'd need the preview id.
+            // Single-tab path is what we support reliably here.
+            let source_window_id =
+                CrossWindowTabDrag::as_ref(ctx).source_window_id().unwrap_or(caller_window_id);
+            let source_workspace =
+                match WorkspaceRegistry::as_ref(ctx).get(source_window_id, ctx) {
+                    Some(ws) => ws,
+                    None => {
+                        log::warn!(
+                            "tab_drag: perform_pane_body_handoff no source workspace for source_wid={source_window_id}"
+                        );
+                        CrossWindowTabDrag::handle(ctx)
+                            .update(ctx, |drag, _| drag.reset_to_floating());
+                        return;
+                    }
+                };
+            // For multi-tab, the dragged tab has been moved into the preview window
+            // at index 0. We need the preview window id — which is currently
+            // private to CrossWindowTabDrag. As a fallback for v1, only single-tab
+            // drags (source_was_single_tab) reliably work here.
+            let _ = source_workspace;
+            log::warn!(
+                "tab_drag: perform_pane_body_handoff multi-tab source not yet supported (needs preview window id accessor)"
+            );
+            CrossWindowTabDrag::handle(ctx).update(ctx, |drag, _| drag.reset_to_floating());
+            return;
+        } else {
+            // Single-tab drag: source window IS the preview, and self == source.
+            // The tab is still in self.tabs at source_tab_index.
+            let Some(tab) = self.tabs.get(source_tab_index) else {
+                log::warn!(
+                    "tab_drag: perform_pane_body_handoff no tab at source_tab_index={source_tab_index}"
+                );
+                CrossWindowTabDrag::handle(ctx).update(ctx, |drag, _| drag.reset_to_floating());
+                return;
+            };
+            let Some(info) = self.get_tab_transfer_info_for_attach(source_tab_index, ctx) else {
+                log::warn!(
+                    "tab_drag: perform_pane_body_handoff get_tab_transfer_info_for_attach returned None for source_tab_index={source_tab_index}"
+                );
+                CrossWindowTabDrag::handle(ctx).update(ctx, |drag, _| drag.reset_to_floating());
+                return;
+            };
+            let _ = tab;
+            info
+        };
+
+        let Some(target_workspace) =
+            WorkspaceRegistry::as_ref(ctx).get(target_window_id, ctx)
+        else {
+            log::warn!(
+                "tab_drag: perform_pane_body_handoff no target workspace for target_wid={target_window_id}"
+            );
+            CrossWindowTabDrag::handle(ctx).update(ctx, |drag, _| drag.reset_to_floating());
+            return;
+        };
+
+        let pane_group_id = transferred_tab.pane_group.id();
+        ctx.transfer_view_tree_to_window(pane_group_id, caller_window_id, target_window_id);
+
+        let source_pane_group = transferred_tab.pane_group.clone();
+        target_workspace.update(ctx, move |workspace, ctx| {
+            let target_pane_group = workspace.active_tab_pane_group().clone();
+            let focused_pane = target_pane_group.read(ctx, |group, ctx| group.focused_pane_id(ctx));
+            target_pane_group.update(ctx, |group, ctx| {
+                let absorbed = group.absorb_pane_group(
+                    source_pane_group.clone(),
+                    focused_pane,
+                    crate::pane_group::Direction::Right,
+                    ctx,
+                );
+                log::info!(
+                    "tab_drag: perform_pane_body_handoff absorbed {} pane(s) into target_wid_active_tab",
+                    absorbed.len()
+                );
+            });
+            workspace.current_workspace_state.is_tab_being_dragged = true;
+        });
+
+        ctx.windows().show_window_and_focus_app(target_window_id);
+    }
+
     fn perform_handoff(&mut self, target: AttachTarget, ctx: &mut ViewContext<Self>) {
         let caller_window_id = ctx.window_id();
 
@@ -25226,6 +25448,17 @@ impl Workspace {
                 // "empty ghost window" bug when the mouse is released back
                 // over the source (or any other) tab bar at drop time.
                 self.perform_handoff(target, ctx);
+                let final_result =
+                    CrossWindowTabDrag::handle(ctx).update(ctx, |drag, ctx| drag.finalize(ctx));
+                self.handle_drop_result(final_result, ctx);
+            }
+            DropResult::DropIntoPaneBody { target_window_id } => {
+                // Drop landed on a target window's pane body. Transfer the
+                // source `PaneGroup`'s view tree into the target window,
+                // absorb its panes into the target's active tab as siblings
+                // of the focused pane, then finalize so the preview/source
+                // window closes.
+                self.perform_pane_body_handoff(target_window_id, ctx);
                 let final_result =
                     CrossWindowTabDrag::handle(ctx).update(ctx, |drag, ctx| drag.finalize(ctx));
                 self.handle_drop_result(final_result, ctx);

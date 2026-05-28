@@ -449,6 +449,17 @@ impl TabData {
                 .into_item(),
             );
         }
+        // Offer "Collapse to Pane" when this tab is NOT the active one and
+        // there's at least one other tab to merge into. Absorbs the tab's
+        // PaneGroup into the active tab as siblings of the active tab's
+        // focused pane, split right, then closes the source tab.
+        if tabs_len > 1 {
+            menu_items.push(
+                MenuItemFields::new("Collapse to Pane")
+                    .with_on_select_action(WorkspaceAction::CollapseTabToPane(index))
+                    .into_item(),
+            );
+        }
         menu_items
     }
 

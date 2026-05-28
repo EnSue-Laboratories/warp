@@ -1530,6 +1530,9 @@ impl AppearanceSettingsPageView {
             AppIcon::Starburst => "Starburst",
             AppIcon::Sticker => "Sticker",
             AppIcon::WarpOne => "Warp 1",
+            AppIcon::Sunset => "Sunset",
+            AppIcon::Snow => "Snow",
+            AppIcon::Galaxy => "Galaxy",
         }
     }
 

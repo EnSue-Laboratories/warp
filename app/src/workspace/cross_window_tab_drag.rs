@@ -241,6 +241,13 @@ enum DragPhase {
     /// (transferring it back to the preview window) is in progress. Set immediately
     /// before views are moved between windows to prevent re-entrant drag processing.
     Transitioning,
+    /// The cursor is hovering over a target window's pane-body area (everything
+    /// inside the window that isn't the tab bar). On drop, the source's
+    /// `PaneGroup` is absorbed into the target's active tab as siblings of the
+    /// focused pane — see [`PaneGroup::absorb_pane_group`]. No view-tree
+    /// transfer has occurred yet; the transfer is deferred to drop time, same
+    /// as [`DragPhase::GhostInTarget`].
+    HoveringPaneBody { target_window_id: WindowId },
 }
 
 /// Data read by a target window's renderer to display the ghost visual during
@@ -328,6 +335,12 @@ pub enum DropResult {
     /// `target` and then re-invoke `CrossWindowTabDrag::finalize(ctx)` to
     /// close the preview and clean up source state.
     DropInto { target: AttachTarget },
+    /// The drop landed over a target window's pane-body area. The caller
+    /// should run `Workspace::perform_pane_body_handoff(target_window_id, ctx)`
+    /// to transfer the source `PaneGroup` into the target window and absorb
+    /// its panes into the target's active tab, then re-invoke
+    /// `CrossWindowTabDrag::finalize(ctx)` for source-side cleanup.
+    DropIntoPaneBody { target_window_id: WindowId },
 }
 
 impl Entity for CrossWindowTabDrag {
@@ -419,10 +432,20 @@ impl CrossWindowTabDrag {
                 target_window_id,
                 target_insertion_index,
             } => Some((*target_window_id, *target_insertion_index)),
-            DragPhase::GhostInTarget { .. } | DragPhase::Floating | DragPhase::Transitioning => {
-                None
-            }
+            DragPhase::GhostInTarget { .. }
+            | DragPhase::HoveringPaneBody { .. }
+            | DragPhase::Floating
+            | DragPhase::Transitioning => None,
         })
+    }
+
+    /// Returns `true` if a cross-window drag is currently hovering over
+    /// `window_id`'s pane-body area (the new tab-as-pane drop target). The
+    /// target workspace uses this to render the drop overlay.
+    pub fn pane_body_hover_for_window(&self, window_id: WindowId) -> bool {
+        self.active_drag
+            .as_ref()
+            .is_some_and(|d| matches!(d.phase, DragPhase::HoveringPaneBody { target_window_id } if target_window_id == window_id))
     }
 
     /// Returns rendering data for the ghost visual in `window_id`'s tab bar,
@@ -591,6 +614,16 @@ impl CrossWindowTabDrag {
                     drag_center_on_screen,
                     target_wid,
                     target_idx,
+                    ctx,
+                )
+            }
+            DragPhase::HoveringPaneBody { target_window_id } => {
+                let target_wid = *target_window_id;
+                self.on_drag_while_pane_body(
+                    caller_window_id,
+                    drag_origin_on_screen,
+                    drag_center_on_screen,
+                    target_wid,
                     ctx,
                 )
             }
@@ -982,6 +1015,95 @@ impl CrossWindowTabDrag {
             return drag_result;
         }
 
+        // (Pane-body drop is intentionally NOT triggered from drag — it
+        // conflicts with drag-to-new-window because the body area is
+        // "anywhere not the tab strip", which would steal drops the user
+        // intended for empty-space-becomes-new-window. The HoveringPaneBody
+        // phase + perform_pane_body_handoff are kept in this module as
+        // dead code for now; the same data-model primitive is exposed
+        // through a tab-context-menu "Collapse to Pane" action instead.)
+        let _ = preview_window_id;
+
+        drag_result
+    }
+
+    /// Handles a drag event while hovering a target window's pane-body area.
+    /// Mirrors `on_drag_while_ghost`: keeps the preview repositioned, checks
+    /// whether the cursor has left, and transitions back to `Floating` if so.
+    /// On the way out, also re-notifies the target workspace so its drop
+    /// overlay clears.
+    fn on_drag_while_pane_body(
+        &mut self,
+        caller_window_id: WindowId,
+        drag_origin_on_screen: Vector2F,
+        drag_center_on_screen: Vector2F,
+        target_window_id: WindowId,
+        ctx: &mut ModelContext<Self>,
+    ) -> DragResult {
+        let Some(drag) = self.active_drag.as_mut() else {
+            return DragResult::Handled;
+        };
+        let preview_window_id = drag.preview_window_id();
+
+        // Reposition the preview so it follows the cursor — same as Floating
+        // and GhostInTarget so the preview is in the right place if the user
+        // moves the cursor off the body.
+        let target_tab_origin_in_window = ctx
+            .element_position_by_id_at_last_frame(preview_window_id, tab_position_id(0))
+            .or_else(|| {
+                ctx.element_position_by_id_at_last_frame(preview_window_id, TAB_BAR_POSITION_ID)
+            })
+            .map(|rect| vec2f(rect.min_x(), rect.min_y()))
+            .unwrap_or(drag.last_known_target_tab_origin_in_window);
+        drag.last_known_target_tab_origin_in_window = target_tab_origin_in_window;
+        let new_window_origin = drag_origin_on_screen - target_tab_origin_in_window;
+        let new_bounds = RectF::new(new_window_origin, drag.window_size);
+        ctx.set_and_cache_window_bounds(preview_window_id, new_bounds);
+
+        let drag_result = if drag.has_dedicated_preview_window() {
+            DragResult::Handled
+        } else {
+            ctx.windows().cancel_synthetic_drag(preview_window_id);
+            let source_window_origin = ctx
+                .window_bounds(&caller_window_id)
+                .map(|b| b.origin())
+                .unwrap_or_default();
+            DragResult::AdjustDraggable {
+                adjustment: source_window_origin - new_window_origin,
+            }
+        };
+
+        // Is the cursor still in this target window's body (not its tab bar)?
+        let still_over_target = match ctx.window_bounds(&target_window_id) {
+            Some(wb) if wb.contains_point(drag_center_on_screen) => {
+                let in_tab_bar =
+                    tab_bar_rects_for_window(target_window_id, ctx)
+                        .into_iter()
+                        .any(|tb| {
+                            let on_screen = RectF::new(
+                                vec2f(wb.min_x() + tb.min_x(), wb.min_y() + tb.min_y()),
+                                tb.size(),
+                            );
+                            expanded_rect(on_screen, TAB_BAR_HIT_MARGIN)
+                                .contains_point(drag_center_on_screen)
+                        });
+                !in_tab_bar
+            }
+            _ => false,
+        };
+
+        if !still_over_target {
+            log::info!(
+                "tab_drag: on_drag_while_pane_body cursor left target_wid={target_window_id} (HoveringPaneBody->Floating)"
+            );
+            if let Some(drag) = self.active_drag.as_mut() {
+                drag.phase = DragPhase::Floating;
+            }
+            if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(target_window_id, ctx) {
+                ws.update(ctx, |_, ctx| ctx.notify());
+            }
+        }
+
         drag_result
     }
 
@@ -1016,6 +1138,16 @@ impl CrossWindowTabDrag {
                 );
                 return DropResult::DropInto { target };
             }
+
+            // Pane-body hover: defer to the workspace to run
+            // `perform_pane_body_handoff` (transfer + absorb) and then call
+            // `finalize` for source-side cleanup.
+            if let DragPhase::HoveringPaneBody { target_window_id } = drag.phase {
+                log::info!(
+                    "tab_drag: on_drop HoveringPaneBody -> DropIntoPaneBody target_wid={target_window_id}"
+                );
+                return DropResult::DropIntoPaneBody { target_window_id };
+            }
         }
 
         let (phase_name, has_dedicated_preview, drop_resolution_attempted_before) =
@@ -1024,6 +1156,7 @@ impl CrossWindowTabDrag {
                     match &d.phase {
                         DragPhase::Floating => "Floating",
                         DragPhase::GhostInTarget { .. } => "GhostInTarget",
+                        DragPhase::HoveringPaneBody { .. } => "HoveringPaneBody",
                         DragPhase::InsertedInTarget { .. } => "InsertedInTarget",
                         DragPhase::Transitioning => "Transitioning",
                     },
@@ -1164,6 +1297,26 @@ impl CrossWindowTabDrag {
                 );
                 DropResult::NoOp
             }
+            // Failsafe: finalize was called while still in HoveringPaneBody
+            // without an intervening DropIntoPaneBody+perform_pane_body_handoff
+            // pair. Clear the target's overlay and fall back to a Floating
+            // finalize (new window for multi-tab, focus self for single-tab).
+            DragPhase::HoveringPaneBody { target_window_id } => {
+                log::warn!(
+                    "tab_drag: finalize branch=HoveringPaneBody (direct finalize without drop) target_wid={target_window_id} source_wid={}",
+                    drag.source_window_id
+                );
+                if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(*target_window_id, ctx) {
+                    ws.update(ctx, |_, ctx| ctx.notify());
+                }
+                if drag.has_dedicated_preview_window() {
+                    self.finalize_preview_as_new_window(&drag, ctx)
+                } else {
+                    ctx.windows()
+                        .show_window_and_focus_app(drag.preview_window_id());
+                    DropResult::FocusSelf
+                }
+            }
         };
 
         // Register any source / preview window whose close was requested as
@@ -1195,7 +1348,8 @@ impl CrossWindowTabDrag {
             DropResult::FocusSelf
             | DropResult::RemoveSourceTab { .. }
             | DropResult::NoOp
-            | DropResult::DropInto { .. } => {}
+            | DropResult::DropInto { .. }
+            | DropResult::DropIntoPaneBody { .. } => {}
         }
 
         result
@@ -1809,6 +1963,58 @@ fn cross_window_attach_target(
     }
 
     best_target.map(|(_, target)| target)
+}
+
+/// Resolves a cross-window pane-body drop target — the window whose body area
+/// (everything inside the window bounds excluding any tab-bar rect) contains
+/// the cursor. The preview window is always excluded so we never try to
+/// absorb a tab into itself. The source window IS included so the user can
+/// drag a tab out of the strip and back into the same window's body for a
+/// same-window absorb.
+///
+/// Tab-bar hit-testing runs first in `on_drag_while_floating`; this function
+/// is only consulted when that returned `None`.
+fn cross_window_pane_body_target(
+    cursor_position_on_screen: Vector2F,
+    preview_window_id: WindowId,
+    ctx: &AppContext,
+) -> Option<WindowId> {
+    let ordered_windows = WindowManager::as_ref(ctx).ordered_window_ids();
+
+    // Iterate front-to-back so the topmost window wins when stacked.
+    for &window_id in ordered_windows.iter() {
+        if window_id == preview_window_id {
+            continue;
+        }
+        let Some(window_bounds) = ctx.window_bounds(&window_id) else {
+            continue;
+        };
+        if !window_bounds.contains_point(cursor_position_on_screen) {
+            continue;
+        }
+
+        // Cursor is inside this window. Exclude the tab-bar area so we don't
+        // double-trigger with the tab-bar hit-test.
+        let tab_bar_positions = tab_bar_rects_for_window(window_id, ctx);
+        let in_tab_bar = tab_bar_positions.into_iter().any(|tab_bar_position| {
+            let tab_bar_on_screen = RectF::new(
+                vec2f(
+                    window_bounds.min_x() + tab_bar_position.min_x(),
+                    window_bounds.min_y() + tab_bar_position.min_y(),
+                ),
+                tab_bar_position.size(),
+            );
+            expanded_rect(tab_bar_on_screen, TAB_BAR_HIT_MARGIN)
+                .contains_point(cursor_position_on_screen)
+        });
+        if in_tab_bar {
+            // Tab-bar hit-test already handles this case.
+            return None;
+        }
+        // The workspace's pane area is everything else inside window bounds.
+        return Some(window_id);
+    }
+    None
 }
 
 /// Returns `rect` expanded outward by `margin` pixels on every side.

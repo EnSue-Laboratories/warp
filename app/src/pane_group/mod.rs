@@ -6988,6 +6988,53 @@ impl PaneGroup {
         );
     }
 
+    /// Moves every pane out of `source` and inserts it into this group as a sibling of
+    /// `target_pane_id`, each split in `direction`. Panes are processed in source's
+    /// visible tree order; each newly inserted pane becomes the anchor for the next
+    /// one so they chain off each other rather than all attaching to the original
+    /// target.
+    ///
+    /// The source `PaneGroup` is emptied as a side effect (each pane is removed via
+    /// [`remove_pane_for_move`], preserving PTYs and view state). The caller is
+    /// responsible for tearing down the now-empty source — typically by closing its
+    /// containing tab.
+    ///
+    /// Both pane groups must live in the same window context. For cross-window
+    /// merges, the caller should run `transfer_view_tree_to_window` on `source`
+    /// first so its views move into this group's window before calling this method.
+    ///
+    /// Returns the IDs of the panes that were successfully absorbed, in insertion
+    /// order. Panes for which `remove_pane_for_move` returned `None` (shouldn't
+    /// happen unless source's tree is internally inconsistent) are skipped.
+    pub fn absorb_pane_group(
+        &mut self,
+        source: ViewHandle<PaneGroup>,
+        target_pane_id: PaneId,
+        direction: Direction,
+        ctx: &mut ViewContext<Self>,
+    ) -> Vec<PaneId> {
+        let source_pane_ids: Vec<PaneId> =
+            source.read(ctx, |group, _| group.panes.visible_pane_ids());
+
+        let mut absorbed = Vec::with_capacity(source_pane_ids.len());
+        let mut insert_anchor = target_pane_id;
+
+        for pane_id in source_pane_ids {
+            let pane_content =
+                source.update(ctx, |group, ctx| group.remove_pane_for_move(&pane_id, ctx));
+            let Some(content) = pane_content else {
+                continue;
+            };
+            // `pane_id` is preserved because `init_pane` derives the new id from the
+            // content itself; we can use the same id as the next anchor.
+            self.add_pane_sibling(insert_anchor, direction, content, false, ctx);
+            insert_anchor = pane_id;
+            absorbed.push(pane_id);
+        }
+
+        absorbed
+    }
+
     fn init_pane(
         &mut self,
         pane: Box<dyn AnyPaneContent>,
