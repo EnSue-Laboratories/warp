@@ -455,7 +455,7 @@ impl TabData {
         // focused pane, split right, then closes the source tab.
         if tabs_len > 1 {
             menu_items.push(
-                MenuItemFields::new("Collapse to Pane in Active Tab")
+                MenuItemFields::new("Collapse to Pane")
                     .with_on_select_action(WorkspaceAction::CollapseTabToPane(index))
                     .into_item(),
             );
