@@ -327,6 +327,7 @@ fn create_loaded_state_with_editors(
                 is_expanded: true,
                 sidebar_mouse_state: MouseStateHandle::default(),
                 header_mouse_state: MouseStateHandle::default(),
+                include_checkbox_mouse_state: MouseStateHandle::default(),
                 chevron_button,
                 open_in_tab_button,
                 discard_button,
