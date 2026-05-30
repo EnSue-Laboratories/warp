@@ -565,7 +565,6 @@ pub(super) struct VerticalTabsPanelState {
     detail_overlay_state: Arc<Mutex<VerticalTabsDetailOverlayState>>,
     new_tab_hover_state: MouseStateHandle,
     new_tab_button_state: MouseStateHandle,
-    new_tab_menu_button_state: MouseStateHandle,
     pub(super) search_query: String,
     settings_button_mouse_state: MouseStateHandle,
     panes_segment_mouse_state: MouseStateHandle,
@@ -602,7 +601,6 @@ impl Default for VerticalTabsPanelState {
             detail_overlay_state: Arc::new(Mutex::new(VerticalTabsDetailOverlayState::default())),
             new_tab_hover_state: Default::default(),
             new_tab_button_state: Default::default(),
-            new_tab_menu_button_state: Default::default(),
             search_query: String::new(),
             settings_button_mouse_state: Default::default(),
             panes_segment_mouse_state: Default::default(),
@@ -1411,15 +1409,12 @@ fn render_new_tab_button(
     let sub_text = theme.sub_text_color(theme.background());
     let main_text = theme.main_text_color(theme.background());
     let ui_builder = appearance.ui_builder().clone();
-    let new_terminal_keybinding =
-        keybinding_name_to_display_string(super::NEW_TERMINAL_TAB_BINDING_NAME, app);
     let tab_configs_keybinding =
         keybinding_name_to_display_string(super::TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME, app);
-
-    // Only highlight the menu button when the menu was opened from it, not when
+    // Only highlight the `+` button when the menu was opened from it, not when
     // it was opened via right-click on the panel chrome (which floats at the
     // pointer and isn't anchored to the button).
-    let is_menu_open = matches!(
+    let is_active = matches!(
         workspace.show_new_session_dropdown_menu,
         Some(NewSessionMenuAnchor::AddTabButton(_))
     ) || workspace
@@ -1427,39 +1422,41 @@ fn render_new_tab_button(
         .as_ref()
         .is_some_and(|flow| flow.as_ref(app).step() == HoaOnboardingStep::TabConfig);
 
-    let terminal_button = Hoverable::new(state.new_tab_hover_state.clone(), move |hover_state| {
-        let button = combo_inner_button(
+    Hoverable::new(state.new_tab_hover_state.clone(), move |hover_state| {
+        let plus_button = combo_inner_button(
             appearance,
             UiIcon::Plus,
-            false,
+            is_active,
             state.new_tab_button_state.clone(),
         )
         .with_style(
             UiComponentStyles::default()
-                .set_border_radius(CornerRadius::with_left(CONTROL_BAR_BUTTON_RADIUS))
-                .set_font_color(sub_text),
+                .set_border_radius(CornerRadius::with_all(CONTROL_BAR_BUTTON_RADIUS))
+                .set_font_color(if is_active { main_text } else { sub_text }.into()),
         )
         .with_active_styles(
             UiComponentStyles::default()
                 .set_background(internal_colors::fg_overlay_3(theme).into()),
         )
         .build()
-        .on_click(|ctx, _, _| {
-            ctx.dispatch_typed_action(WorkspaceAction::AddTerminalTab {
-                hide_homepage: false,
+        .on_click(|ctx, _, position| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleNewSessionMenu {
+                anchor: NewSessionMenuAnchor::AddTabButton(position),
             });
         })
         .finish();
 
+        let button = SavePosition::new(plus_button, VERTICAL_TABS_ADD_TAB_POSITION_ID).finish();
+
         let contents = if hover_state.is_hovered() {
-            let tooltip = if let Some(sublabel) = new_terminal_keybinding.clone() {
+            let tooltip = if let Some(sublabel) = tab_configs_keybinding.clone() {
                 ui_builder
-                    .tool_tip_with_sublabel("New terminal".to_string(), sublabel)
+                    .tool_tip_with_sublabel("Tab configs".to_string(), sublabel)
                     .build()
                     .finish()
             } else {
                 ui_builder
-                    .tool_tip("New terminal".to_string())
+                    .tool_tip("Tab configs".to_string())
                     .build()
                     .finish()
             };
@@ -1478,106 +1475,21 @@ fn render_new_tab_button(
             button
         };
 
-        Container::new(
+        let mut container = Container::new(
             ConstrainedBox::new(contents)
                 .with_height(SPLIT_BUTTON_HEIGHT)
                 .finish(),
         )
-        .with_corner_radius(CornerRadius::with_left(CONTROL_BAR_BUTTON_RADIUS))
-        .with_background(if hover_state.is_hovered() {
-            internal_colors::neutral_1(theme)
-        } else {
-            internal_colors::transparent(theme)
-        })
-        .finish()
+        .with_corner_radius(CornerRadius::with_all(CONTROL_BAR_BUTTON_RADIUS));
+
+        if is_active {
+            container = container.with_background(internal_colors::fg_overlay_3(theme));
+        } else if hover_state.is_hovered() {
+            container = container.with_background(internal_colors::neutral_1(theme));
+        }
+        container.finish()
     })
-    .finish();
-
-    let menu_button = Hoverable::new(
-        state.new_tab_menu_button_state.clone(),
-        move |hover_state| {
-            let button = combo_inner_button(
-                appearance,
-                UiIcon::ChevronDown,
-                is_menu_open,
-                state.new_tab_menu_button_state.clone(),
-            )
-            .with_style(
-                UiComponentStyles::default()
-                    .set_border_radius(CornerRadius::with_right(CONTROL_BAR_BUTTON_RADIUS))
-                    .set_font_color(if is_menu_open { main_text } else { sub_text }.into()),
-            )
-            .with_active_styles(
-                UiComponentStyles::default()
-                    .set_background(internal_colors::fg_overlay_3(theme).into()),
-            )
-            .build()
-            .on_click(|ctx, _, position| {
-                ctx.dispatch_typed_action(WorkspaceAction::ToggleNewSessionMenu {
-                    anchor: NewSessionMenuAnchor::AddTabButton(position),
-                });
-            })
-            .finish();
-
-            let button = SavePosition::new(button, VERTICAL_TABS_ADD_TAB_POSITION_ID).finish();
-
-            let contents = if hover_state.is_hovered() {
-                let tooltip = if let Some(sublabel) = tab_configs_keybinding.clone() {
-                    ui_builder
-                        .tool_tip_with_sublabel("Tab configs".to_string(), sublabel)
-                        .build()
-                        .finish()
-                } else {
-                    ui_builder
-                        .tool_tip("Tab configs".to_string())
-                        .build()
-                        .finish()
-                };
-                let mut stack = Stack::new().with_child(button);
-                stack.add_positioned_overlay_child(
-                    tooltip,
-                    OffsetPositioning::offset_from_parent(
-                        vec2f(0., 4.),
-                        ParentOffsetBounds::WindowByPosition,
-                        ParentAnchor::BottomMiddle,
-                        ChildAnchor::TopMiddle,
-                    ),
-                );
-                stack.finish()
-            } else {
-                button
-            };
-
-            Container::new(
-                ConstrainedBox::new(contents)
-                    .with_height(SPLIT_BUTTON_HEIGHT)
-                    .finish(),
-            )
-            .with_corner_radius(CornerRadius::with_right(CONTROL_BAR_BUTTON_RADIUS))
-            .with_background(if hover_state.is_hovered() {
-                internal_colors::neutral_1(theme)
-            } else {
-                internal_colors::transparent(theme)
-            })
-            .finish()
-        },
-    )
-    .finish();
-
-    let row = Container::new(
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(0.)
-            .with_child(terminal_button)
-            .with_child(menu_button)
-            .finish(),
-    )
-    .with_corner_radius(CornerRadius::with_all(CONTROL_BAR_BUTTON_RADIUS));
-
-    ConstrainedBox::new(row)
-        .with_height(SPLIT_BUTTON_HEIGHT)
-        .finish()
+    .finish()
 }
 
 fn render_vertical_tabs_panel(
