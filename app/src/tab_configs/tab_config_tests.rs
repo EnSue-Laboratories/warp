@@ -51,6 +51,8 @@ fn build_test_tab_config_toml(name: &str, commands: Vec<String>) -> String {
             directory: Some("/Users/me/repo".to_string()),
             commands: Some(commands),
             shell: None,
+            ssh_host: None,
+            ssh_args: None,
         }],
         params: HashMap::new(),
         source_path: None,
@@ -902,4 +904,155 @@ directory = "~/a"
     } else {
         panic!("Expected fallback PaneTemplate");
     }
+}
+
+// ── SSH pane type ───────────────────────────────────────────────────
+
+use crate::launch_configs::launch_config::PaneMode;
+
+#[test]
+fn test_parse_ssh_pane() {
+    let toml_str = r#"
+name = "Prod box"
+
+[[panes]]
+id = "main"
+type = "ssh"
+host = "deploy@prod.example.com"
+ssh_args = ["-p", "2222"]
+"#;
+    let config: TabConfig = toml::from_str(toml_str).expect("Should parse ssh pane");
+    assert_eq!(config.panes[0].pane_type, Some(TabConfigPaneType::Ssh));
+    assert_eq!(config.panes[0].ssh_host.as_deref(), Some("deploy@prod.example.com"));
+    assert_eq!(
+        config.panes[0].ssh_args.as_deref(),
+        Some(["-p".to_string(), "2222".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn test_render_ssh_pane_runs_ssh_command() {
+    let toml_str = r#"
+name = "Prod box"
+
+[[panes]]
+id = "main"
+type = "ssh"
+host = "deploy@prod.example.com"
+ssh_args = ["-p", "2222"]
+"#;
+    let config: TabConfig = toml::from_str(toml_str).expect("Should parse");
+    let (_, template) = render_tab_config(&config, &HashMap::new(), None);
+    if let PaneTemplateType::PaneTemplate {
+        commands,
+        pane_mode,
+        is_focused,
+        ..
+    } = template
+    {
+        // SSH panes reuse the terminal backend and auto-run the ssh invocation.
+        assert_eq!(pane_mode, PaneMode::Terminal);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].exec, "ssh deploy@prod.example.com -p 2222");
+        assert_eq!(is_focused, Some(true));
+    } else {
+        panic!("Expected PaneTemplate for ssh pane");
+    }
+}
+
+#[test]
+fn test_render_ssh_pane_prepends_before_user_commands() {
+    let toml_str = r#"
+name = "Box"
+
+[[panes]]
+id = "main"
+type = "ssh"
+host = "host"
+commands = ["echo done"]
+"#;
+    let config: TabConfig = toml::from_str(toml_str).expect("Should parse");
+    let (_, template) = render_tab_config(&config, &HashMap::new(), None);
+    if let PaneTemplateType::PaneTemplate { commands, .. } = template {
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].exec, "ssh host");
+        assert_eq!(commands[1].exec, "echo done");
+    } else {
+        panic!("Expected PaneTemplate");
+    }
+}
+
+#[test]
+fn test_render_ssh_pane_substitutes_and_quotes_host() {
+    let toml_str = r#"
+name = "Box"
+
+[[panes]]
+id = "main"
+type = "ssh"
+host = "{{server}}"
+
+[params.server]
+type = "text"
+"#;
+    let config: TabConfig = toml::from_str(toml_str).expect("Should parse");
+    // A param value with shell metacharacters must be quoted so it can't inject
+    // extra tokens into the ssh command.
+    let mut params = HashMap::new();
+    params.insert("server".to_string(), "u@h; rm -rf /".to_string());
+    let (_, template) = render_tab_config(&config, &params, None);
+    if let PaneTemplateType::PaneTemplate { commands, .. } = template {
+        assert_eq!(commands[0].exec, "ssh 'u@h; rm -rf /'");
+    } else {
+        panic!("Expected PaneTemplate");
+    }
+}
+
+#[test]
+fn test_ssh_pane_missing_host_falls_back() {
+    let toml_str = r#"
+name = "Box"
+
+[[panes]]
+id = "main"
+type = "ssh"
+"#;
+    let config: TabConfig = toml::from_str(toml_str).expect("Should parse");
+    // No host -> resolve errors -> render falls back to a default terminal pane.
+    let (_, template) = render_tab_config(&config, &HashMap::new(), None);
+    if let PaneTemplateType::PaneTemplate {
+        commands,
+        pane_mode,
+        ..
+    } = template
+    {
+        assert_eq!(pane_mode, PaneMode::Terminal);
+        assert!(commands.is_empty());
+    } else {
+        panic!("Expected fallback PaneTemplate");
+    }
+}
+
+#[test]
+fn test_is_ssh_tab() {
+    let ssh_toml = r#"
+name = "Box"
+[[panes]]
+id = "main"
+type = "ssh"
+host = "host"
+"#;
+    let ssh: TabConfig = toml::from_str(ssh_toml).expect("Should parse");
+    assert!(ssh.is_ssh_tab());
+
+    let term_toml = r#"
+name = "Box"
+[[panes]]
+id = "main"
+type = "terminal"
+commands = ["ssh-add"]
+"#;
+    let term: TabConfig = toml::from_str(term_toml).expect("Should parse");
+    // A terminal pane that merely *mentions* ssh in a command is NOT an SSH tab.
+    assert!(!term.is_ssh_tab());
 }

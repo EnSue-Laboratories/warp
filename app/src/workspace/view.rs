@@ -351,7 +351,8 @@ use crate::tab_configs::telemetry::{
 #[cfg(feature = "local_fs")]
 use crate::tab_configs::telemetry::{NewWorktreeConfigOpenSource, WorktreeBranchNamingMode};
 use crate::tab_configs::{
-    NewWorktreeModal, NewWorktreeModalEvent, TabConfigParamsModal, TabConfigParamsModalEvent,
+    NewWorktreeModal, NewWorktreeModalEvent, TabConfig, TabConfigParamsModal,
+    TabConfigParamsModalEvent,
 };
 use crate::terminal::alt_screen_reporting::AltScreenReporting;
 use crate::terminal::available_shells::AvailableShell;
@@ -6290,47 +6291,63 @@ impl Workspace {
         // 4. User tab configs
         if FeatureFlag::TabConfigs.is_enabled() {
             let tab_configs = WarpConfig::as_ref(ctx).tab_configs().to_vec();
+            // Group SSH tab configs (any pane is `type = "ssh"`) under their own
+            // "SSH Tabs" heading, after the regular configs.
+            let (ssh_tab_configs, normal_tab_configs): (Vec<_>, Vec<_>) = tab_configs
+                .into_iter()
+                .partition(|tab_config| tab_config.is_ssh_tab());
 
             // Count occurrences of each config name so we can disambiguate
             // duplicates in the menu (e.g. "My Tab Config", "My Tab Config (1)").
             let mut name_totals: HashMap<String, usize> = HashMap::new();
-            for config in &tab_configs {
+            for config in normal_tab_configs.iter().chain(ssh_tab_configs.iter()) {
                 *name_totals.entry(config.name.clone()).or_default() += 1;
             }
             let mut name_seen: HashMap<String, usize> = HashMap::new();
 
-            for tab_config in tab_configs {
-                let is_worktree = tab_config.is_worktree();
-                let icon = if is_worktree {
-                    icons::Icon::Dataflow02
-                } else {
-                    icons::Icon::LayoutAlt01
-                };
-                let is_default_config = effective_default == DefaultSessionMode::TabConfig
-                    && tab_config
-                        .source_path
-                        .as_ref()
-                        .is_some_and(|p| p.to_string_lossy() == default_tab_config_path);
-
-                let display_name = if name_totals.get(&tab_config.name).copied().unwrap_or(0) > 1 {
-                    let seen = name_seen.entry(tab_config.name.clone()).or_default();
-                    *seen += 1;
-                    if *seen == 1 {
-                        tab_config.name.clone()
+            let mut append_tab_config_items = |menu_items: &mut Vec<_>, configs: Vec<TabConfig>| {
+                for tab_config in configs {
+                    let is_worktree = tab_config.is_worktree();
+                    let icon = if is_worktree {
+                        icons::Icon::Dataflow02
                     } else {
-                        format!("{} ({})", tab_config.name, *seen - 1)
-                    }
-                } else {
-                    tab_config.name.clone()
-                };
+                        icons::Icon::LayoutAlt01
+                    };
+                    let is_default_config = effective_default == DefaultSessionMode::TabConfig
+                        && tab_config
+                            .source_path
+                            .as_ref()
+                            .is_some_and(|p| p.to_string_lossy() == default_tab_config_path);
 
-                let mut item = MenuItemFields::new(display_name)
-                    .with_on_select_action(WorkspaceAction::SelectTabConfig(tab_config))
-                    .with_icon(icon);
-                if is_default_config {
-                    item = item.with_key_shortcut_label(shortcut_label.clone());
+                    let display_name = if name_totals.get(&tab_config.name).copied().unwrap_or(0)
+                        > 1
+                    {
+                        let seen = name_seen.entry(tab_config.name.clone()).or_default();
+                        *seen += 1;
+                        if *seen == 1 {
+                            tab_config.name.clone()
+                        } else {
+                            format!("{} ({})", tab_config.name, *seen - 1)
+                        }
+                    } else {
+                        tab_config.name.clone()
+                    };
+
+                    let mut item = MenuItemFields::new(display_name)
+                        .with_on_select_action(WorkspaceAction::SelectTabConfig(tab_config))
+                        .with_icon(icon);
+                    if is_default_config {
+                        item = item.with_key_shortcut_label(shortcut_label.clone());
+                    }
+                    menu_items.push(item.into_item());
                 }
-                menu_items.push(item.into_item());
+            };
+
+            append_tab_config_items(&mut menu_items, normal_tab_configs);
+            if !ssh_tab_configs.is_empty() {
+                menu_items.push(MenuItem::Separator);
+                menu_items.push(MenuItemFields::new("SSH Tabs").with_disabled(true).into_item());
+                append_tab_config_items(&mut menu_items, ssh_tab_configs);
             }
         }
 
