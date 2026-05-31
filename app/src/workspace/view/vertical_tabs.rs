@@ -565,6 +565,7 @@ pub(super) struct VerticalTabsPanelState {
     detail_overlay_state: Arc<Mutex<VerticalTabsDetailOverlayState>>,
     new_tab_hover_state: MouseStateHandle,
     new_tab_button_state: MouseStateHandle,
+    new_tab_menu_hover_state: MouseStateHandle,
     new_tab_menu_button_state: MouseStateHandle,
     pub(super) search_query: String,
     settings_button_mouse_state: MouseStateHandle,
@@ -602,6 +603,7 @@ impl Default for VerticalTabsPanelState {
             detail_overlay_state: Arc::new(Mutex::new(VerticalTabsDetailOverlayState::default())),
             new_tab_hover_state: Default::default(),
             new_tab_button_state: Default::default(),
+            new_tab_menu_hover_state: Default::default(),
             new_tab_menu_button_state: Default::default(),
             search_query: String::new(),
             settings_button_mouse_state: Default::default(),
@@ -1495,7 +1497,7 @@ fn render_new_tab_button(
     .finish();
 
     let menu_button = Hoverable::new(
-        state.new_tab_menu_button_state.clone(),
+        state.new_tab_menu_hover_state.clone(),
         move |hover_state| {
             let button = combo_inner_button(
                 appearance,

@@ -1,0 +1,22 @@
+# Warp SSH Tab Config
+# Stored in ~/.warp/tab_configs/ — copy this file, rename it, and edit the host.
+#
+# An `ssh` pane is an ordinary terminal pane whose first command is
+# `ssh <host> [ssh_args…]`, so it reuses the local PTY path and Warp's existing
+# SSH-session detection. Any tab config with at least one `type = "ssh"` pane is
+# grouped under the "SSH Tabs" heading in the new-session menu.
+#
+# Docs at https://docs.warp.dev/terminal/windows/tab-configs
+
+name = "SSH: my host"
+
+[[panes]]
+id = "main"
+type = "ssh"
+# Required. An SSH destination ("user@host") or a Host alias from ~/.ssh/config.
+# Supports {{ }} template params (shell-quoted on render).
+host = "user@example.com"
+# Optional extra args appended to the ssh invocation, e.g. a non-default port:
+# ssh_args = ["-p", "2222"]
+
+[params]
