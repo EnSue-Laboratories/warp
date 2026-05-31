@@ -103,6 +103,13 @@ pub enum TabConfigPaneType {
     Agent,
     /// A cloud-mode (ambient agent) pane with no local shell.
     Cloud,
+    /// A terminal that immediately connects to a host over SSH.
+    ///
+    /// Renders as a normal terminal pane whose first command is
+    /// `ssh <host> [ssh_args…]`, so it reuses the local PTY path and Warp's
+    /// existing SSH-session detection/warpification. The `host` field is
+    /// required for this pane type (see [`TabConfigPaneNode::ssh_host`]).
+    Ssh,
 }
 
 /// A single node in the flat `[[panes]]` array.  Distinguished as a split vs.
@@ -131,6 +138,17 @@ pub struct TabConfigPaneNode {
     /// Only applies to `terminal` and `agent` pane types.
     /// If omitted or the shell is not found, the user's default shell is used.
     pub shell: Option<String>,
+
+    /// SSH destination for `type = "ssh"` panes, e.g. `"user@host"` or a `Host`
+    /// alias from `~/.ssh/config`. Required for ssh panes, ignored otherwise.
+    /// Supports `{{ }}` template variables (shell-quoted on render).
+    #[serde(rename = "host")]
+    pub ssh_host: Option<String>,
+
+    /// Extra args appended to the `ssh` invocation for `type = "ssh"` panes
+    /// (e.g. `["-p", "2222"]`). Each entry supports `{{ }}` template variables
+    /// and is shell-quoted on render.
+    pub ssh_args: Option<Vec<String>>,
 }
 
 // ── TabConfig ───────────────────────────────────────────────────────
@@ -174,6 +192,17 @@ impl TabConfig {
                 (name.clone(), value)
             })
             .collect()
+    }
+
+    /// Whether this config defines an SSH tab, i.e. any pane is `type = "ssh"`.
+    ///
+    /// Used by the new-session menu to group SSH tab configs under an "SSH Tabs"
+    /// heading. Keyed off the structured pane type rather than sniffing command
+    /// strings, so `ssh-add` / `sshfs` / a second-line `ssh` never misclassify.
+    pub fn is_ssh_tab(&self) -> bool {
+        self.panes
+            .iter()
+            .any(|pane| pane.pane_type == Some(TabConfigPaneType::Ssh))
     }
 
     pub(crate) fn is_worktree(&self) -> bool {
@@ -362,10 +391,37 @@ fn resolve_pane_node(
             .as_ref()
             .ok_or_else(|| format!("leaf pane '{}' is missing required 'type' field", node.id))?;
 
+        // SSH panes are ordinary terminal panes that auto-run `ssh <host>` as
+        // their first command. This reuses the local PTY path and Warp's
+        // existing SSH-session detection rather than introducing a new pane
+        // backend.
         let pane_mode = match pane_type {
-            TabConfigPaneType::Terminal => PaneMode::Terminal,
+            TabConfigPaneType::Terminal | TabConfigPaneType::Ssh => PaneMode::Terminal,
             TabConfigPaneType::Agent => PaneMode::Agent,
             TabConfigPaneType::Cloud => PaneMode::Cloud,
+        };
+
+        let ssh_command: Option<String> = if *pane_type == TabConfigPaneType::Ssh {
+            let host = node.ssh_host.as_deref().ok_or_else(|| {
+                format!("ssh pane '{}' is missing required 'host' field", node.id)
+            })?;
+            // Render host + each arg with the unquoted context, then shell-quote
+            // every final token. This makes each structured arg exactly one shell
+            // token (so a literal arg with spaces/metacharacters — e.g. an
+            // `-o ProxyCommand=…` — isn't word-split) while still preventing param
+            // values from injecting extra tokens.
+            let mut parts = vec![
+                "ssh".to_string(),
+                shell_words::quote(&handlebars::render_template(host, unquoted)).into_owned(),
+            ];
+            if let Some(args) = &node.ssh_args {
+                parts.extend(args.iter().map(|a| {
+                    shell_words::quote(&handlebars::render_template(a, unquoted)).into_owned()
+                }));
+            }
+            Some(parts.join(" "))
+        } else {
+            None
         };
 
         let cwd = node
@@ -377,17 +433,19 @@ fn resolve_pane_node(
             })
             .unwrap_or_default();
 
-        let commands: Vec<CommandTemplate> = node
-            .commands
-            .as_ref()
-            .map(|cmds| {
-                cmds.iter()
-                    .map(|cmd| CommandTemplate {
-                        exec: handlebars::render_template(cmd, quoted),
-                    })
-                    .collect()
+        let user_commands = node.commands.as_ref().map(|cmds| {
+            cmds.iter().map(|cmd| CommandTemplate {
+                exec: handlebars::render_template(cmd, quoted),
             })
-            .unwrap_or_default();
+        });
+
+        // For ssh panes the `ssh …` invocation runs first; any author-supplied
+        // `commands` run afterwards (i.e. once the session ends).
+        let commands: Vec<CommandTemplate> = ssh_command
+            .into_iter()
+            .map(|exec| CommandTemplate { exec })
+            .chain(user_commands.into_iter().flatten())
+            .collect();
 
         let explicitly_focused = node.is_focused == Some(true);
         let is_focused = explicitly_focused || auto_focus_first_leaf;

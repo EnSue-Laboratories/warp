@@ -164,6 +164,8 @@ pub fn build_tab_config(
                 Some(commands)
             },
             shell: None,
+            ssh_host: None,
+            ssh_args: None,
         }],
         params,
         source_path: None,
@@ -264,6 +266,8 @@ fn snapshot_to_flat_panes(
                     directory: None,
                     commands: None,
                     shell: None,
+                    ssh_host: None,
+                    ssh_args: None,
                 },
             );
 
@@ -301,6 +305,8 @@ fn snapshot_to_flat_panes(
                 directory,
                 commands: None,
                 shell: None,
+                ssh_host: None,
+                ssh_args: None,
             });
 
             my_id
