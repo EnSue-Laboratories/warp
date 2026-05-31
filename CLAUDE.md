@@ -19,6 +19,7 @@ There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that docume
 | `tab list` / `tab new [--config <name>]` / `tab close <id>` / `tab focus <id>` | ✅ |
 | `pane list [--tab <id>]` / `pane send [--pane <id>] <cmd…>` / `pane read [--pane <id>] [--blocks N]` | ✅ |
 | `pane write [--pane <id>] "<text>"` / `pane keystroke [--pane <id>] <key>` | ✅ |
+| `pane screen [--pane <id>]` (capture the live screen grid, incl. TUI/alt-screen) | ✅ |
 | `pane focus <id>` / `pane close <id>` / `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
 | `block list [--pane <id>] [--limit N]` / `block read <id>` | ✅ |
 

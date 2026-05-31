@@ -1909,6 +1909,30 @@ impl TerminalModel {
         self.alt_screen_active
     }
 
+    /// Renders the pane's current screen to plain text, for out-of-process
+    /// readers (the control server's `pane screen`). Returns `(alt_screen,
+    /// text)`: when a full-screen/TUI app is running (vim, tmux, less, …) this
+    /// dumps the alternate-screen grid the user actually sees — content that
+    /// never enters Warp's block model and so is invisible to `pane read`.
+    /// Otherwise it returns the active block's prompt/command + output.
+    pub fn screen_to_string(&self) -> (bool, String) {
+        if self.alt_screen_active {
+            (true, self.alt_screen.output_to_string())
+        } else {
+            let block = self.block_list.active_block();
+            let command = block.prompt_and_command_grid().contents_to_string(false, None);
+            let output = block.output_grid().contents_to_string(false, None);
+            let text = if command.trim().is_empty() {
+                output
+            } else if output.trim().is_empty() {
+                command
+            } else {
+                format!("{command}\n{output}")
+            };
+            (false, text)
+        }
+    }
+
     pub fn set_pending_shell_launch_data(&mut self, shell_launch_data: ShellLaunchData) {
         self.active_shell_launch_data = Some(shell_launch_data.clone());
         self.pending_shell_launch_data = Some(shell_launch_data);

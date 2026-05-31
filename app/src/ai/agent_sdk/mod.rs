@@ -1730,6 +1730,7 @@ fn control_telemetry_action(
         ControlCommand::Pane(PaneCommand::Write(_)) => "pane.write",
         ControlCommand::Pane(PaneCommand::Keystroke(_)) => "pane.keystroke",
         ControlCommand::Pane(PaneCommand::Read(_)) => "pane.read",
+        ControlCommand::Pane(PaneCommand::Screen(_)) => "pane.screen",
         ControlCommand::Pane(PaneCommand::Focus(_)) => "pane.focus",
         ControlCommand::Pane(PaneCommand::Split(_)) => "pane.split",
         ControlCommand::Pane(PaneCommand::Close(_)) => "pane.close",

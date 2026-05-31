@@ -75,6 +75,11 @@ pub enum PaneCommand {
     /// Read a pane's recent output (scrollback summary).
     Read(PaneReadArgs),
 
+    /// Capture a pane's current screen as text. Unlike `read` (which dumps
+    /// command blocks), this renders the live screen grid — so it can see
+    /// inside full-screen/TUI apps like vim, tmux, and less.
+    Screen(PaneScreenArgs),
+
     /// Focus a pane by id.
     Focus(PaneIdArg),
 
@@ -163,6 +168,13 @@ pub struct PaneReadArgs {
     /// Number of most-recent blocks to include in the dump.
     #[arg(long, default_value_t = 10)]
     pub blocks: usize,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct PaneScreenArgs {
+    /// Pane id. Defaults to the focused pane if omitted.
+    #[arg(long)]
+    pub pane: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
