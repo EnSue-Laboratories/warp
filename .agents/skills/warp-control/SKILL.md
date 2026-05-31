@@ -148,6 +148,14 @@ sleep 1
 "$WARP" control pane send ssh user@host
 ```
 
+**Open a saved tab config by name (e.g. an SSH tab):**
+```bash
+# Opens the tab config whose `name` field matches, via the same path the
+# new-session menu uses. SSH configs auto-run `ssh <host>` on launch.
+"$WARP" control tab new --config "SSH: claude-code"
+# Unknown name → error listing the available config names.
+```
+
 **Split for diff-style side-by-side work:**
 ```bash
 "$WARP" control pane split --direction right

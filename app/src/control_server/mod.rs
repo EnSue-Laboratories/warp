@@ -23,6 +23,7 @@ use warpui::TypedActionView;
 
 use crate::pane_group::{PaneGroup, PaneGroupAction};
 use crate::pane_group::tree::Direction as PaneDirection;
+use crate::user_config::WarpConfig;
 use crate::workspace::action::WorkspaceAction;
 use crate::workspace::registry::WorkspaceRegistry;
 use crate::workspace::view::Workspace;
@@ -150,7 +151,7 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::ListPanes { tab } => handle_list_panes(tab, ctx),
         Request::SendInput { pane, text } => handle_send_input(pane, text, ctx),
         Request::ReadPane { pane, blocks } => handle_read_pane(pane, blocks, ctx),
-        Request::NewTab => handle_new_tab(ctx),
+        Request::NewTab { config } => handle_new_tab(config, ctx),
         Request::CloseTab { tab } => handle_close_tab(tab, ctx),
         Request::ListBlocks { pane, limit } => handle_list_blocks(pane, limit, ctx),
         Request::SplitPane { pane, direction } => handle_split_pane(pane, direction, ctx),
@@ -724,12 +725,45 @@ fn keystroke_to_bytes(key: &str) -> Option<Vec<u8>> {
     Some(bytes.to_vec())
 }
 
-fn handle_new_tab(ctx: &mut AppContext) -> Response {
+fn handle_new_tab(config: Option<String>, ctx: &mut AppContext) -> Response {
     let Some(workspace) = active_workspace(ctx) else {
         return Response::Error {
             message: "no active workspace".into(),
         };
     };
+
+    // With a config name, open the matching saved tab config (e.g. an SSH tab)
+    // via the same action the new-session menu uses. Without one, open a plain
+    // terminal tab.
+    if let Some(name) = config {
+        let tab_config = WarpConfig::as_ref(ctx)
+            .tab_configs()
+            .iter()
+            .find(|tc| tc.name == name)
+            .cloned();
+        let Some(tab_config) = tab_config else {
+            let available: Vec<String> = WarpConfig::as_ref(ctx)
+                .tab_configs()
+                .iter()
+                .map(|tc| tc.name.clone())
+                .collect();
+            return Response::Error {
+                message: format!(
+                    "no tab config named {name:?}. Available: {}",
+                    if available.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                ),
+            };
+        };
+        workspace.update(ctx, |ws, ctx| {
+            ws.handle_action(&WorkspaceAction::SelectTabConfig(tab_config), ctx);
+        });
+        return Response::Ok;
+    }
+
     workspace.update(ctx, |ws, ctx| {
         ws.handle_action(
             &WorkspaceAction::AddTerminalTab {

@@ -13,7 +13,9 @@ pub enum Request {
     ListPanes { tab: Option<u64> },
     SendInput { pane: Option<u64>, text: String },
     ReadPane { pane: Option<u64>, blocks: usize },
-    NewTab,
+    /// Open a new tab. With `config`, opens the saved tab config whose `name`
+    /// matches (e.g. an SSH tab); otherwise opens a plain terminal tab.
+    NewTab { config: Option<String> },
     CloseTab { tab: u64 },
     FocusTab { tab: u64 },
     FocusPane { pane: u64 },
