@@ -8,8 +8,8 @@ use std::io::{BufReader, BufWriter};
 use anyhow::{anyhow, Context, Result};
 use warp_cli::control::{
     BlockCommand, BlockIdArg, BlockListArgs, ControlCommand, KeystrokeArgs, PaneCommand,
-    PaneIdArg, PaneListArgs, PaneReadArgs, SendInputArgs, SplitArgs, SplitDirection, TabCommand,
-    TabIdArg, WriteBytesArgs,
+    PaneIdArg, PaneListArgs, PaneReadArgs, PaneScreenArgs, SendInputArgs, SplitArgs,
+    SplitDirection, TabCommand, TabIdArg, WriteBytesArgs,
 };
 use warp_cli::GlobalOptions;
 use warpui::AppContext;
@@ -94,6 +94,12 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
                 blocks,
             }
         }
+        ControlCommand::Pane(PaneCommand::Screen(PaneScreenArgs { pane })) => Request::ReadScreen {
+            pane: match pane {
+                Some(s) => Some(parse_u64(&s, "pane")?),
+                None => None,
+            },
+        },
         ControlCommand::Pane(PaneCommand::Focus(PaneIdArg { id })) => Request::FocusPane {
             pane: parse_u64(&id, "pane")?,
         },
@@ -158,6 +164,15 @@ fn print_response(response: Response) -> Result<()> {
         Response::Tabs { tabs } => print_tabs(&tabs),
         Response::Panes { panes } => print_panes(&panes),
         Response::PaneOutput { pane, blocks } => print_pane_output(pane, &blocks),
+        Response::Screen {
+            pane,
+            alt_screen,
+            text,
+        } => {
+            let mode = if alt_screen { "alt-screen" } else { "primary" };
+            println!("# pane {pane} screen ({mode}):");
+            println!("{}", text.trim_end());
+        }
         Response::Blocks { blocks } => print_blocks(&blocks),
         Response::Block { block } => print_one_block(&block),
         Response::Error { message } => return Err(anyhow!("{message}")),

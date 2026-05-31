@@ -151,6 +151,7 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::ListPanes { tab } => handle_list_panes(tab, ctx),
         Request::SendInput { pane, text } => handle_send_input(pane, text, ctx),
         Request::ReadPane { pane, blocks } => handle_read_pane(pane, blocks, ctx),
+        Request::ReadScreen { pane } => handle_read_screen(pane, ctx),
         Request::NewTab { config } => handle_new_tab(config, ctx),
         Request::CloseTab { tab } => handle_close_tab(tab, ctx),
         Request::ListBlocks { pane, limit } => handle_list_blocks(pane, limit, ctx),
@@ -363,6 +364,31 @@ fn handle_read_pane(pane: Option<u64>, blocks: usize, ctx: &mut AppContext) -> R
     Response::PaneOutput {
         pane: pane_wire,
         blocks: entries,
+    }
+}
+
+fn handle_read_screen(pane: Option<u64>, ctx: &mut AppContext) -> Response {
+    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
+        Some(p) => p,
+        None => {
+            return Response::Error {
+                message: "no pane specified and no focused pane found".into(),
+            }
+        }
+    };
+    let Some(view_handle) = lookup_terminal_view(pane_wire, ctx) else {
+        return Response::Error {
+            message: format!("pane {pane_wire} not found"),
+        };
+    };
+    let (alt_screen, text) = view_handle.update(ctx, |view, _ctx| {
+        let model = view.model.lock();
+        model.screen_to_string()
+    });
+    Response::Screen {
+        pane: pane_wire,
+        alt_screen,
+        text,
     }
 }
 

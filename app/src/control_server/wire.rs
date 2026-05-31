@@ -13,6 +13,10 @@ pub enum Request {
     ListPanes { tab: Option<u64> },
     SendInput { pane: Option<u64>, text: String },
     ReadPane { pane: Option<u64>, blocks: usize },
+    /// Render a pane's current screen to text. Captures the alternate-screen
+    /// grid for TUI apps (vim/tmux/less/…) that `ReadPane`'s block model can't
+    /// see.
+    ReadScreen { pane: Option<u64> },
     /// Open a new tab. With `config`, opens the saved tab config whose `name`
     /// matches (e.g. an SSH tab); otherwise opens a plain terminal tab.
     NewTab { config: Option<String> },
@@ -47,6 +51,9 @@ pub enum Response {
     Tabs { tabs: Vec<TabSummary> },
     Panes { panes: Vec<PaneSummary> },
     PaneOutput { pane: u64, blocks: Vec<BlockEntry> },
+    /// Rendered screen text for a pane. `alt_screen` is true when the text came
+    /// from a TUI/full-screen app's alternate screen.
+    Screen { pane: u64, alt_screen: bool, text: String },
     Blocks { blocks: Vec<BlockEntry> },
     Block { block: BlockEntry },
     Error { message: String },

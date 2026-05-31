@@ -62,6 +62,7 @@ warp-oss control block read  <id>                             # id from `block l
 |---|---|---|
 | Run a shell command and capture its output as a Warp block | `pane send` | The normal case. Goes through Warp's command-block submission. |
 | Drive a TUI app (vim, fzf, less, claude, htop, ssh password prompts) | `pane write` + `pane keystroke` | Bytes go straight to the PTY. No newline appended unless you ask for one. |
+| **Read what a TUI app is showing** (vim, tmux, less, claude, htop) | `pane screen` | Captures the live screen grid. `pane read` only sees command *blocks*, so it's blind inside full-screen apps — use `pane screen` there. Output is tagged `(alt-screen)` when a TUI is active, `(primary)` otherwise. |
 | Send a special key (Enter, Esc, arrows, Tab, Backspace, function keys, ctrl-c…) | `pane keystroke` | Recognized names: `enter` `return` `tab` `esc` `escape` `space` `backspace` `delete` `ins` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `f1`–`f12`. Chords: `ctrl-<char>` or `c-<char>` (e.g. `ctrl-c`, `ctrl-d`, `ctrl-[` = Esc, `ctrl-?` = Backspace). |
 
 **Mixing the two paths is fine.** A common pattern: `pane send --pane <id> vim file.txt` to launch the TUI (because `send` waits for the shell prompt and runs the binary), then switch to `pane write` / `pane keystroke` for everything inside vim.
