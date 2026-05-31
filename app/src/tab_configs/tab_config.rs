@@ -405,14 +405,19 @@ fn resolve_pane_node(
             let host = node.ssh_host.as_deref().ok_or_else(|| {
                 format!("ssh pane '{}' is missing required 'host' field", node.id)
             })?;
-            // Render host + args through the shell-quoted context so any param
-            // substitutions can't inject extra shell tokens.
+            // Render host + each arg with the unquoted context, then shell-quote
+            // every final token. This makes each structured arg exactly one shell
+            // token (so a literal arg with spaces/metacharacters — e.g. an
+            // `-o ProxyCommand=…` — isn't word-split) while still preventing param
+            // values from injecting extra tokens.
             let mut parts = vec![
                 "ssh".to_string(),
-                handlebars::render_template(host, quoted),
+                shell_words::quote(&handlebars::render_template(host, unquoted)).into_owned(),
             ];
             if let Some(args) = &node.ssh_args {
-                parts.extend(args.iter().map(|a| handlebars::render_template(a, quoted)));
+                parts.extend(args.iter().map(|a| {
+                    shell_words::quote(&handlebars::render_template(a, unquoted)).into_owned()
+                }));
             }
             Some(parts.join(" "))
         } else {

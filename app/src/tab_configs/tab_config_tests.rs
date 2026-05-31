@@ -961,6 +961,31 @@ ssh_args = ["-p", "2222"]
 }
 
 #[test]
+fn test_render_ssh_pane_quotes_literal_args_with_spaces() {
+    let toml_str = r#"
+name = "Bastion"
+
+[[panes]]
+id = "main"
+type = "ssh"
+host = "host"
+ssh_args = ["-o", "ProxyCommand=ssh -W %h:%p bastion"]
+"#;
+    let config: TabConfig = toml::from_str(toml_str).expect("Should parse");
+    let (_, template) = render_tab_config(&config, &HashMap::new(), None);
+    if let PaneTemplateType::PaneTemplate { commands, .. } = template {
+        // Each structured arg is exactly one shell token: a literal arg with
+        // spaces/metacharacters is quoted as a whole, not word-split.
+        assert_eq!(
+            commands[0].exec,
+            "ssh host -o 'ProxyCommand=ssh -W %h:%p bastion'"
+        );
+    } else {
+        panic!("Expected PaneTemplate for ssh pane");
+    }
+}
+
+#[test]
 fn test_render_ssh_pane_prepends_before_user_commands() {
     let toml_str = r#"
 name = "Box"
