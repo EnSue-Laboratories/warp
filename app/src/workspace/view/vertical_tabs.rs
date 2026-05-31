@@ -1564,8 +1564,11 @@ fn render_new_tab_button(
     .finish();
 
     let row = Container::new(
+        // Min so the +/chevron stay a compact button group; Max would let this
+        // non-shrink trailing child eat the control bar's width and push out
+        // the search box (review).
         Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_size(MainAxisSize::Min)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_spacing(0.)
             .with_child(terminal_button)
