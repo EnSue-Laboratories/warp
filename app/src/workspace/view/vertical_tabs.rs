@@ -1411,6 +1411,9 @@ fn render_new_tab_button(
     let sub_text = theme.sub_text_color(theme.background());
     let main_text = theme.main_text_color(theme.background());
     let ui_builder = appearance.ui_builder().clone();
+    // Second clone: the terminal-button and menu-button closures are both
+    // `move`, so each needs its own builder.
+    let menu_ui_builder = ui_builder.clone();
     let new_terminal_keybinding =
         keybinding_name_to_display_string(super::NEW_TERMINAL_TAB_BINDING_NAME, app);
     let tab_configs_keybinding =
@@ -1437,7 +1440,7 @@ fn render_new_tab_button(
         .with_style(
             UiComponentStyles::default()
                 .set_border_radius(CornerRadius::with_left(CONTROL_BAR_BUTTON_RADIUS))
-                .set_font_color(sub_text),
+                .set_font_color(sub_text.into()),
         )
         .with_active_styles(
             UiComponentStyles::default()
@@ -1478,18 +1481,16 @@ fn render_new_tab_button(
             button
         };
 
-        Container::new(
+        let mut container = Container::new(
             ConstrainedBox::new(contents)
                 .with_height(SPLIT_BUTTON_HEIGHT)
                 .finish(),
         )
-        .with_corner_radius(CornerRadius::with_left(CONTROL_BAR_BUTTON_RADIUS))
-        .with_background(if hover_state.is_hovered() {
-            internal_colors::neutral_1(theme)
-        } else {
-            internal_colors::transparent(theme)
-        })
-        .finish()
+        .with_corner_radius(CornerRadius::with_left(CONTROL_BAR_BUTTON_RADIUS));
+        if hover_state.is_hovered() {
+            container = container.with_background(internal_colors::neutral_1(theme));
+        }
+        container.finish()
     })
     .finish();
 
@@ -1523,12 +1524,12 @@ fn render_new_tab_button(
 
             let contents = if hover_state.is_hovered() {
                 let tooltip = if let Some(sublabel) = tab_configs_keybinding.clone() {
-                    ui_builder
+                    menu_ui_builder
                         .tool_tip_with_sublabel("Tab configs".to_string(), sublabel)
                         .build()
                         .finish()
                 } else {
-                    ui_builder
+                    menu_ui_builder
                         .tool_tip("Tab configs".to_string())
                         .build()
                         .finish()
@@ -1548,18 +1549,16 @@ fn render_new_tab_button(
                 button
             };
 
-            Container::new(
+            let mut container = Container::new(
                 ConstrainedBox::new(contents)
                     .with_height(SPLIT_BUTTON_HEIGHT)
                     .finish(),
             )
-            .with_corner_radius(CornerRadius::with_right(CONTROL_BAR_BUTTON_RADIUS))
-            .with_background(if hover_state.is_hovered() {
-                internal_colors::neutral_1(theme)
-            } else {
-                internal_colors::transparent(theme)
-            })
-            .finish()
+            .with_corner_radius(CornerRadius::with_right(CONTROL_BAR_BUTTON_RADIUS));
+            if hover_state.is_hovered() {
+                container = container.with_background(internal_colors::neutral_1(theme));
+            }
+            container.finish()
         },
     )
     .finish();
@@ -1573,7 +1572,8 @@ fn render_new_tab_button(
             .with_child(menu_button)
             .finish(),
     )
-    .with_corner_radius(CornerRadius::with_all(CONTROL_BAR_BUTTON_RADIUS));
+    .with_corner_radius(CornerRadius::with_all(CONTROL_BAR_BUTTON_RADIUS))
+    .finish();
 
     ConstrainedBox::new(row)
         .with_height(SPLIT_BUTTON_HEIGHT)
