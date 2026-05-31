@@ -16,7 +16,7 @@ There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that docume
 
 | Subcommand | Status |
 |---|---|
-| `tab list` / `tab new` / `tab close <id>` / `tab focus <id>` | ✅ |
+| `tab list` / `tab new [--config <name>]` / `tab close <id>` / `tab focus <id>` | ✅ |
 | `pane list [--tab <id>]` / `pane send [--pane <id>] <cmd…>` / `pane read [--pane <id>] [--blocks N]` | ✅ |
 | `pane write [--pane <id>] "<text>"` / `pane keystroke [--pane <id>] <key>` | ✅ |
 | `pane focus <id>` / `pane close <id>` / `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |

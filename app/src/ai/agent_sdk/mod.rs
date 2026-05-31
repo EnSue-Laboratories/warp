@@ -1722,7 +1722,7 @@ fn control_telemetry_action(
     use warp_cli::control::{BlockCommand, ControlCommand, PaneCommand, TabCommand};
     match cmd {
         ControlCommand::Tab(TabCommand::List) => "tab.list",
-        ControlCommand::Tab(TabCommand::New) => "tab.new",
+        ControlCommand::Tab(TabCommand::New(_)) => "tab.new",
         ControlCommand::Tab(TabCommand::Close(_)) => "tab.close",
         ControlCommand::Tab(TabCommand::Focus(_)) => "tab.focus",
         ControlCommand::Pane(PaneCommand::List(_)) => "pane.list",

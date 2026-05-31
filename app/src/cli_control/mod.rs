@@ -43,7 +43,9 @@ pub fn run_standalone(command: ControlCommand) -> Result<()> {
 fn build_request(cmd: ControlCommand) -> Result<Request> {
     Ok(match cmd {
         ControlCommand::Tab(TabCommand::List) => Request::ListTabs,
-        ControlCommand::Tab(TabCommand::New) => Request::NewTab,
+        ControlCommand::Tab(TabCommand::New(args)) => Request::NewTab {
+            config: args.config,
+        },
         ControlCommand::Tab(TabCommand::Close(TabIdArg { id })) => Request::CloseTab {
             tab: parse_u64(&id, "tab")?,
         },

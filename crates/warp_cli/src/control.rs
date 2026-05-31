@@ -33,12 +33,22 @@ pub enum ControlCommand {
 pub enum TabCommand {
     /// List all open tabs.
     List,
-    /// Open a new tab.
-    New,
+    /// Open a new tab. With `--config`, opens a saved tab config by name
+    /// (e.g. an SSH tab); otherwise opens a plain terminal tab.
+    New(TabNewArgs),
     /// Close a tab by id.
     Close(TabIdArg),
     /// Focus a tab by id.
     Focus(TabIdArg),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct TabNewArgs {
+    /// Open a saved tab config by name (matched against the config's `name`
+    /// field, from your `tab_configs/` directory), e.g. `--config "SSH:
+    /// claude-code"`. When omitted, opens a plain terminal tab.
+    #[arg(long)]
+    pub config: Option<String>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
