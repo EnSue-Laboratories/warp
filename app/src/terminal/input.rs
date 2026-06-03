@@ -1455,7 +1455,7 @@ fn should_show_completions_in_ai_input(buffer_text: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DenyExecutionReason {
+pub(crate) enum DenyExecutionReason {
     /// Can't execute command because shell bootstrapping is still underway; shell isn't ready to
     /// execute user-supplied commands yet.
     NotBootstrapped,
@@ -1476,21 +1476,22 @@ enum DenyExecutionReason {
 }
 
 impl DenyExecutionReason {
-    pub fn is_existing_active_command(&self) -> bool {
+    fn is_existing_active_command(&self) -> bool {
         matches!(self, DenyExecutionReason::ExistingActiveCommand)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandExecutionResult {
+    Executed,
+    Blocked(DenyExecutionReason),
+    NotExecuted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CanExecuteCommand {
     Yes,
     No(DenyExecutionReason),
-}
-
-impl CanExecuteCommand {
-    pub fn is_no(&self) -> bool {
-        matches!(self, CanExecuteCommand::No(_))
-    }
 }
 
 pub struct Input {
@@ -6578,22 +6579,32 @@ impl Input {
         }
     }
 
-    pub fn execute_pending_command(&mut self, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn execute_pending_command(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> CommandExecutionResult {
         if !self.has_pending_command {
-            return;
+            return CommandExecutionResult::NotExecuted;
         }
 
         let command = self.get_command(ctx);
-        if self.can_execute_command(ctx).is_no() {
-            return;
+        if let CanExecuteCommand::No(reason) = self.can_execute_command(ctx) {
+            log::warn!("Tried to execute command but can_execute_command was false: {reason:?}");
+            return CommandExecutionResult::Blocked(reason);
         }
 
-        self.try_execute_command(&command, ctx);
+        let did_execute = self.try_execute_command(&command, ctx);
         self.has_pending_command = false;
 
         self.editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(InteractionState::Editable, ctx);
         });
+
+        if did_execute {
+            CommandExecutionResult::Executed
+        } else {
+            CommandExecutionResult::NotExecuted
+        }
     }
 
     fn should_block_cloud_mode_setup_submission(&self, app: &AppContext) -> bool {

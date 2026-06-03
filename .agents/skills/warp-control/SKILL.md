@@ -44,7 +44,7 @@ warp-oss control tab   close <id>
 warp-oss control tab   focus <id>
 
 warp-oss control pane  list      [--tab <id>]
-warp-oss control pane  send      <id> "<command>"             # executes as a block
+warp-oss control pane  send      [--pane <id>] "<command>"    # block exec; pane is a --FLAG (gotcha below)
 warp-oss control pane  write     [--pane <id>] "<text>"       # raw bytes to PTY, no \n
 warp-oss control pane  keystroke [--pane <id>] <key>          # named key / ctrl-<char>
 warp-oss control pane  read      [--pane <id>] [--blocks N]   # default N=10
@@ -69,6 +69,8 @@ warp-oss control block read  <id>                             # id from `block l
 
 `pane send` accepts the command as trailing args, so you can usually skip quoting (`pane send --pane 1990 ls -la /tmp` works). Quote only when the command contains shell operators you want the *target* pane's shell to interpret (pipes, redirects, `&&`, etc.).
 
+> ⚠️ **GOTCHA — `--pane` is a FLAG, not positional.** For `send`, the pane id must be `--pane <id>`. If you write `pane send 1990 "cmd"`, the `1990` gets swallowed into the trailing-args command (it runs `1990 cmd` → `command not found: 1990`) and `--pane` defaults to the *focused* pane — so it silently targets the wrong pane with garbage. `write`/`keystroke`/`read`/`screen` also take `--pane`. Always use the flag.
+
 End-to-end vim example, fully driven from outside:
 
 ```bash
@@ -82,17 +84,17 @@ WARP=… ; P=2794
 cat /tmp/scratch.txt   # → hello
 ```
 
-Where the binary lives in the maintainer's setup (use whichever exists):
+Where the binary lives (use the Applications bundle by default):
 
-- `/Volumes/ThinkPlus/warp-target/debug/warp-oss` (fresh local builds — preferred for testing)
-- `~/Library/Application Support/WarpOss-local-build/WarpOss.app/Contents/MacOS/warp-oss` (codesigned bundle copy)
+- `/Applications/WarpOss.app/Contents/MacOS/warp-oss` ← **preferred / canonical install**
+- `/Volumes/ThinkPlus/warp-target/debug/warp-oss` (fresh local build — only when testing an unreleased build)
 
-In a normal install it would be the bundled binary inside `Warp.app`.
+The `warp` shell alias points at the same binary. The `control` command is just a *client* of the running Warp GUI (the server) over the shared socket, so which binary you invoke doesn't change behavior — default to the `/Applications` one.
 
 ## Standard workflow
 
 ```bash
-WARP=/Volumes/ThinkPlus/warp-target/debug/warp-oss   # adjust to your setup
+WARP=/Applications/WarpOss.app/Contents/MacOS/warp-oss   # canonical install
 
 # 1) Survey state — identify which tab/pane you want to talk to.
 "$WARP" control tab list
@@ -178,6 +180,7 @@ sleep 1
 | `pane <id> not found` | Stale id from before a tab was closed / app restarted. | Re-run `pane list` and use the fresh id. |
 | `tab <id> not found` (for `tab close`) | Same as above. | Re-run `tab list`. Note `tab close` accepts either the tab id OR the index. |
 | `pane send` returns `ok` but `pane read` shows nothing | Shell hasn't run yet, or you're reading too few blocks. | `sleep 2; pane read --blocks 5`. Long commands need more time. |
+| `pane send` returns `ok` but the command NEVER runs (text just sits in the prompt) | The pane wasn't ready to execute: still bootstrapping (freshly-created tab) or busy with an active/long-running command. `send` silently sets the text "pending" and still returns `ok` — a false success. (Known bug: EnSue-Laboratories/warp#15.) | Only `send` into an **idle, bootstrapped** pane (verify via `pane read`/`pane screen` first). For an interactive/blocked program, use `pane write` + `pane keystroke` instead. Don't re-send — it stacks more pending text. |
 
 ## Don't
 

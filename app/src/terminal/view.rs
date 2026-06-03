@@ -415,8 +415,8 @@ use crate::terminal::grid_size_util::grid_cell_dimensions;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
 use crate::terminal::input::inline_menu::InlineMenuPositioner;
 use crate::terminal::input::{
-    CommandExecutionSource, InputAction, InputEmptyStateChangeReason, InputState, MenuPositioning,
-    MenuPositioningProvider,
+    CommandExecutionResult, CommandExecutionSource, InputAction, InputEmptyStateChangeReason,
+    InputState, MenuPositioning, MenuPositioningProvider,
 };
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::ligature_settings::{should_use_ligature_rendering, LigatureSettings};
@@ -15513,12 +15513,12 @@ impl TerminalView {
     /// Executes a command that was submitted by the user and not yet sent to the shell.
     pub fn execute_pending_command(&mut self, _: (), ctx: &mut ViewContext<Self>) {
         let had_pending = self.input.read(ctx, |input, _| input.has_pending_command());
-        self.input.update(ctx, |input, ctx| {
-            input.execute_pending_command(ctx);
-        });
+        let result = self
+            .input
+            .update(ctx, |input, ctx| input.execute_pending_command(ctx));
         // If the pending command was just consumed, track that we're waiting
         // for the resulting block to complete.
-        if had_pending && !self.input.read(ctx, |input, _| input.has_pending_command()) {
+        if had_pending && matches!(result, CommandExecutionResult::Executed) {
             self.awaiting_pending_command_completion = true;
         }
     }
@@ -15528,9 +15528,19 @@ impl TerminalView {
     //
     // If we set it as pending, the command will execute when we trigger another call to
     // `execute_pending_command` (either from a `BlockCompleted` or `BootstrapPrecmdDone` event)
-    pub fn execute_command_or_set_pending(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn execute_command_or_set_pending(
+        &mut self,
+        command: &str,
+        ctx: &mut ViewContext<Self>,
+    ) -> CommandExecutionResult {
         self.set_pending_command(command, ctx);
-        self.execute_pending_command((), ctx);
+        let result = self
+            .input
+            .update(ctx, |input, ctx| input.execute_pending_command(ctx));
+        if matches!(result, CommandExecutionResult::Executed) {
+            self.awaiting_pending_command_completion = true;
+        }
+        result
     }
 
     fn hide_slow_bootstrap_banner(&mut self, ctx: &mut ViewContext<Self>) {

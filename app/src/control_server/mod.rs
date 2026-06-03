@@ -18,6 +18,7 @@ use futures::io::{BufReader, BufWriter};
 use futures::AsyncReadExt as _;
 use warpui::{AppContext, Entity, EntityId, SingletonEntity, ViewHandle};
 
+use crate::terminal::input::{CommandExecutionResult, DenyExecutionReason};
 use crate::terminal::view::TerminalView;
 use warpui::TypedActionView;
 
@@ -330,10 +331,31 @@ fn handle_send_input(pane: Option<u64>, text: String, ctx: &mut AppContext) -> R
             message: format!("pane {pane_wire} not found"),
         };
     };
-    view_handle.update(ctx, |view, ctx| {
-        view.execute_command_or_set_pending(&text, ctx);
-    });
-    Response::Ok
+    match view_handle.update(ctx, |view, ctx| {
+        view.execute_command_or_set_pending(&text, ctx)
+    }) {
+        CommandExecutionResult::Executed => Response::Ok,
+        CommandExecutionResult::Blocked(reason) => Response::Error {
+            message: deny_execution_message(reason).into(),
+        },
+        CommandExecutionResult::NotExecuted => Response::Error {
+            message: "command was not executed".into(),
+        },
+    }
+}
+
+fn deny_execution_message(reason: DenyExecutionReason) -> &'static str {
+    match reason {
+        DenyExecutionReason::NotBootstrapped => {
+            "pane is not ready to execute commands yet because shell bootstrapping is still in progress"
+        }
+        DenyExecutionReason::ExistingActiveCommand => {
+            "pane cannot execute commands while another command is already running"
+        }
+        DenyExecutionReason::HistoryNotAppendable => {
+            "pane cannot execute commands because its history is not appendable"
+        }
+    }
 }
 
 fn handle_read_pane(pane: Option<u64>, blocks: usize, ctx: &mut AppContext) -> Response {
