@@ -1285,6 +1285,11 @@ fn handle_terminal_view_event(
                 group.pane_with_open_environment_setup_mode_selector = is_open.then_some(pane_id);
                 ctx.notify();
             }
+            Event::AuthSecretDeleteConfirmationDialogToggled { is_open } => {
+                group.pane_with_open_auth_secret_delete_confirmation_dialog =
+                    is_open.then_some(pane_id);
+                ctx.notify();
+            }
             Event::AnonymousUserSignup => ctx.emit(pane_group::Event::AnonymousUserSignup),
             #[cfg(feature = "local_fs")]
             Event::OpenFileWithTarget {
@@ -2126,7 +2131,7 @@ fn launch_remote_child(
             Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Unknown => None,
         });
     let spawn_request = SpawnAgentRequest {
-        prompt: request.prompt,
+        prompt: Some(request.prompt),
         mode: UserQueryMode::Normal,
         config: Some(AgentConfigSnapshot {
             name: agent_name,
@@ -2150,6 +2155,7 @@ fn launch_remote_child(
         initial_snapshot_token: None,
         agent_identity_uid: None,
         snapshot_disabled: should_disable_snapshot(ctx).then_some(true),
+        orchestration_handoff: None,
     };
 
     new_terminal_view.update(ctx, |terminal_view, ctx| {

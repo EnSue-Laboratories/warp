@@ -79,6 +79,10 @@ const BIDI_CHARS: [char; 9] = [
 /// and changes against the main branch.
 #[derive(Clone, Default)]
 enum InternalDiffState {
+    /// Repo detection has been kicked off but hasn't completed yet.
+    /// We don't yet know whether the path is inside a git repository, so this is
+    /// surfaced as a loading state rather than a premature "not a repository" verdict.
+    Detecting,
     #[default]
     NotInRepository,
     Loading,
@@ -237,12 +241,12 @@ impl LocalDiffStateModel {
                         ctx.emit(DiffStateModelEvent::SingleFileUpdated { path, diff });
                     }
                     Err(err) => {
-                        log::error!("File invalidation error: {err}");
+                        warp_core::report_error!(err.as_ref());
                         send_telemetry_from_ctx!(
                             CodeReviewTelemetryEvent::LoadDiffFailed {
                                 is_local: Some(true),
                                 mode: me.mode.clone(),
-                                error: err.to_string(),
+                                error: err.kind.to_string(),
                                 // Per-file invalidation errors are not tied to a full
                                 // tracked load, so `load_duration` is intentionally `None`.
                                 load_duration: None,
@@ -257,7 +261,11 @@ impl LocalDiffStateModel {
 
         let model = Self {
             repository: None,
-            state: InternalDiffState::default(),
+            state: if repo_path.is_some() {
+                InternalDiffState::Detecting
+            } else {
+                InternalDiffState::NotInRepository
+            },
             subscriber_id: None,
             mode: DiffMode::default(),
             metadata: None,
@@ -290,6 +298,7 @@ impl LocalDiffStateModel {
                 // Repo detection completed but found no repository.
                 // Emit so subscribers (e.g. the server model) can drain
                 // pending responses with the NotInRepository state.
+                me.state = InternalDiffState::NotInRepository;
                 me.tracked_diff_load_start_time = None;
                 ctx.emit(DiffStateModelEvent::NewDiffsComputed {
                     diffs: None,
@@ -315,8 +324,8 @@ impl LocalDiffStateModel {
 
     pub fn get(&self) -> DiffState {
         match &self.state {
+            InternalDiffState::Detecting | InternalDiffState::Loading => DiffState::Loading,
             InternalDiffState::NotInRepository => DiffState::NotInRepository,
-            InternalDiffState::Loading => DiffState::Loading,
             InternalDiffState::Loaded(diffs) => match &diffs.changes {
                 Ok(_) => DiffState::Loaded,
                 Err(err) => DiffState::Error(err.clone()),
@@ -1418,7 +1427,7 @@ impl LocalDiffStateModel {
             self.load_diffs_for_current_repo(false, false, ctx);
         }
         if let Some(metadata) = self.metadata.clone() {
-            ctx.emit(DiffStateModelEvent::MetadataRefreshed(metadata));
+            ctx.emit(DiffStateModelEvent::MetadataRefreshed(Box::new(metadata)));
         }
     }
 

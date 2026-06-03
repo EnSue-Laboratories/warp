@@ -27,6 +27,7 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::{BlocklistAIPermissions, RequestInput, SessionContext};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+use crate::ai::execution_profiles::AIExecutionProfileAppExt;
 use crate::ai::llms::LLMId;
 use crate::ai::mcp::templatable_manager::TemplatableMCPServerInfo;
 use crate::ai::mcp::TemplatableMCPServerManager;
@@ -297,19 +298,10 @@ impl RequestParams {
         // server-side, drop the override; otherwise clamp it to the model's
         // current `[min, max]` range. This closes the window between an
         // in-flight model metadata refresh and the next request.
-        let context_window_limit = {
-            let profile_data = AIExecutionProfilesModel::as_ref(app)
-                .active_profile(terminal_view_id, app)
-                .data()
-                .clone();
-            profile_data
-                .configurable_context_window(app)
-                .and_then(|cw| {
-                    profile_data
-                        .context_window_limit
-                        .map(|v| v.clamp(cw.min, cw.max))
-                })
-        };
+        let context_window_limit = AIExecutionProfilesModel::as_ref(app)
+            .active_profile(terminal_view_id, app)
+            .data()
+            .context_window_limit_for_request(app);
 
         Self {
             input: request_input.all_inputs().cloned().collect(),
