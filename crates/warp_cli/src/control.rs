@@ -8,7 +8,7 @@
 //! - **tab** — UI tab container (holds a PaneGroup). Operations: list, new,
 //!   close, focus.
 //! - **pane** — one shell process / PTY within a tab. Operations: list, send
-//!   input, read scrollback, focus, split, close.
+//!   input, read scrollback, focus, split, close, share.
 //! - **block** — one executed command and its output. Operations: list, read.
 
 use clap::{Args, Subcommand, ValueEnum};
@@ -79,6 +79,15 @@ pub enum PaneCommand {
     /// command blocks), this renders the live screen grid — so it can see
     /// inside full-screen/TUI apps like vim, tmux, and less.
     Screen(PaneScreenArgs),
+
+    /// Start sharing a pane's session and return immediately while setup is pending.
+    Share(PaneShareArgs),
+
+    /// Print the watch link for a shared pane, once sharing has finished setup.
+    ShareLink(PaneTargetArgs),
+
+    /// Stop sharing a pane's session.
+    Unshare(PaneTargetArgs),
 
     /// Focus a pane by id.
     Focus(PaneIdArg),
@@ -178,6 +187,24 @@ pub struct PaneScreenArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct PaneShareArgs {
+    /// Pane id. Defaults to the focused pane if omitted.
+    #[arg(long)]
+    pub pane: Option<String>,
+
+    /// How much scrollback to include in the shared session.
+    #[arg(long, value_enum, default_value_t = ShareScrollback::None)]
+    pub scrollback: ShareScrollback,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct PaneTargetArgs {
+    /// Pane id. Defaults to the focused pane if omitted.
+    #[arg(long)]
+    pub pane: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct SplitArgs {
     /// Pane to split. Defaults to the focused pane.
     #[arg(long)]
@@ -198,6 +225,14 @@ pub enum SplitDirection {
     Up,
     /// Open the new pane below the source.
     Down,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ShareScrollback {
+    /// Do not include prior scrollback.
+    None,
+    /// Include all shareable prior scrollback.
+    All,
 }
 
 #[derive(Debug, Clone, Args)]

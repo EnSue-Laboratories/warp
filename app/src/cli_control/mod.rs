@@ -7,9 +7,10 @@ use std::io::{BufReader, BufWriter};
 
 use anyhow::{anyhow, Context, Result};
 use warp_cli::control::{
-    BlockCommand, BlockIdArg, BlockListArgs, ControlCommand, KeystrokeArgs, PaneCommand,
-    PaneIdArg, PaneListArgs, PaneReadArgs, PaneScreenArgs, SendInputArgs, SplitArgs,
-    SplitDirection, TabCommand, TabIdArg, WriteBytesArgs,
+    BlockCommand, BlockIdArg, BlockListArgs, ControlCommand, KeystrokeArgs, PaneCommand, PaneIdArg,
+    PaneListArgs, PaneReadArgs, PaneScreenArgs, PaneShareArgs, PaneTargetArgs, SendInputArgs,
+    ShareScrollback as CliShareScrollback, SplitArgs, SplitDirection, TabCommand, TabIdArg,
+    WriteBytesArgs,
 };
 use warp_cli::GlobalOptions;
 use warpui::AppContext;
@@ -17,7 +18,7 @@ use warpui::AppContext;
 use crate::control_server::framing::{read_frame_sync, write_frame_sync};
 use crate::control_server::socket_path;
 use crate::control_server::wire::{
-    BlockEntry, PaneSummary, Request, Response, SplitDir, TabSummary,
+    BlockEntry, PaneSummary, Request, Response, ShareScrollback, SplitDir, TabSummary,
 };
 
 /// Dispatch `warp control …` from the full CLI plumbing (after AppContext
@@ -100,6 +101,34 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
                 None => None,
             },
         },
+        ControlCommand::Pane(PaneCommand::Share(PaneShareArgs { pane, scrollback })) => {
+            Request::SharePane {
+                pane: match pane {
+                    Some(s) => Some(parse_u64(&s, "pane")?),
+                    None => None,
+                },
+                scrollback: match scrollback {
+                    CliShareScrollback::None => ShareScrollback::None,
+                    CliShareScrollback::All => ShareScrollback::All,
+                },
+            }
+        }
+        ControlCommand::Pane(PaneCommand::ShareLink(PaneTargetArgs { pane })) => {
+            Request::SharePaneLink {
+                pane: match pane {
+                    Some(s) => Some(parse_u64(&s, "pane")?),
+                    None => None,
+                },
+            }
+        }
+        ControlCommand::Pane(PaneCommand::Unshare(PaneTargetArgs { pane })) => {
+            Request::UnsharePane {
+                pane: match pane {
+                    Some(s) => Some(parse_u64(&s, "pane")?),
+                    None => None,
+                },
+            }
+        }
         ControlCommand::Pane(PaneCommand::Focus(PaneIdArg { id })) => Request::FocusPane {
             pane: parse_u64(&id, "pane")?,
         },
@@ -173,6 +202,14 @@ fn print_response(response: Response) -> Result<()> {
             println!("# pane {pane} screen ({mode}):");
             println!("{}", text.trim_end());
         }
+        Response::ShareStarted { pane } => {
+            println!("sharing started for pane {pane} (pending)");
+        }
+        Response::ShareLink { pane: _, url } => println!("{url}"),
+        Response::SharePending { pane } => {
+            println!("sharing pending for pane {pane}; retry pane share-link");
+        }
+        Response::ShareStopped { pane } => println!("sharing stopped for pane {pane}"),
         Response::Blocks { blocks } => print_blocks(&blocks),
         Response::Block { block } => print_one_block(&block),
         Response::Error { message } => return Err(anyhow!("{message}")),

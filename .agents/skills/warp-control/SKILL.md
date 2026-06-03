@@ -52,6 +52,10 @@ warp-oss control pane  focus     <id>                         # also activates t
 warp-oss control pane  close     <id>
 warp-oss control pane  split     [--pane <id>] --direction <left|right|up|down>
 
+warp-oss control pane  share      [--pane <id>] [--scrollback none|all]  # start sharing
+warp-oss control pane  share-link [--pane <id>]               # print the watch URL
+warp-oss control pane  unshare    [--pane <id>]               # stop sharing
+
 warp-oss control block list [--pane <id>] [--limit N]
 warp-oss control block read  <id>                             # id from `block list`
 ```
@@ -171,6 +175,16 @@ sleep 1
 "$WARP" control pane send --pane 3106 "tail -f /var/log/foo.log"
 "$WARP" control pane send --pane 2415 "tail -f /var/log/bar.log"
 ```
+
+**Share a pane and get a watch-on-any-device link** — exposes Warp's native session sharing. Sharing requires Warp to be **logged into a Warp account** (it connects to Warp's sharing server). Session setup is **async**, so `share` returns immediately as *pending* and you poll `share-link` until the URL appears:
+```bash
+"$WARP" control pane share --pane 65777            # → "sharing started for pane 65777 (pending)"
+# poll until the link is ready (usually a second or two):
+until URL=$("$WARP" control pane share-link --pane 65777 2>/dev/null) && [ -n "$URL" ]; do sleep 1; done
+echo "$URL"                                         # → https://app.warp.dev/session/<id>  (open on any device)
+"$WARP" control pane unshare --pane 65777           # stop sharing when done
+```
+`pane share-link` prints the bare URL on success (script-friendly), `sharing pending …` while setup is still in flight, and errors if the pane isn't sharing. `--scrollback all` includes prior scrollback in the shared view; default `none` shares only from now on. Viewers join read-only or as executor depending on the role Warp grants them.
 
 ## Failure modes you'll see
 
