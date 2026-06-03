@@ -23,11 +23,15 @@ use warpui::TypedActionView;
 
 use crate::pane_group::{PaneGroup, PaneGroupAction};
 use crate::pane_group::tree::Direction as PaneDirection;
+use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
+use crate::terminal::shared_session::{
+    join_link, SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionSource,
+};
 use crate::user_config::WarpConfig;
 use crate::workspace::action::WorkspaceAction;
 use crate::workspace::registry::WorkspaceRegistry;
 use crate::workspace::view::Workspace;
-use wire::{BlockEntry, PaneSummary, Request, Response, SplitDir, TabSummary};
+use wire::{BlockEntry, PaneSummary, Request, Response, ShareScrollback, SplitDir, TabSummary};
 
 /// Singleton model that owns the control socket task.
 pub struct ControlModel;
@@ -152,6 +156,9 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::SendInput { pane, text } => handle_send_input(pane, text, ctx),
         Request::ReadPane { pane, blocks } => handle_read_pane(pane, blocks, ctx),
         Request::ReadScreen { pane } => handle_read_screen(pane, ctx),
+        Request::SharePane { pane, scrollback } => handle_share_pane(pane, scrollback, ctx),
+        Request::SharePaneLink { pane } => handle_share_pane_link(pane, ctx),
+        Request::UnsharePane { pane } => handle_unshare_pane(pane, ctx),
         Request::NewTab { config } => handle_new_tab(config, ctx),
         Request::CloseTab { tab } => handle_close_tab(tab, ctx),
         Request::ListBlocks { pane, limit } => handle_list_blocks(pane, limit, ctx),
@@ -214,6 +221,21 @@ fn lookup_terminal_view(wire_pane_id: u64, ctx: &AppContext) -> Option<ViewHandl
         }
     }
     None
+}
+
+fn resolve_terminal_view(
+    pane: Option<u64>,
+    ctx: &AppContext,
+) -> Result<(u64, ViewHandle<TerminalView>), Response> {
+    let pane_wire = pane
+        .or_else(|| first_pane_wire_id(ctx))
+        .ok_or_else(|| Response::Error {
+            message: "no pane specified and no focused pane found".into(),
+        })?;
+    let view_handle = lookup_terminal_view(pane_wire, ctx).ok_or_else(|| Response::Error {
+        message: format!("pane {pane_wire} not found"),
+    })?;
+    Ok((pane_wire, view_handle))
 }
 
 /// The default pane for commands that omit `--pane`: the focused pane of the
@@ -390,6 +412,90 @@ fn handle_read_screen(pane: Option<u64>, ctx: &mut AppContext) -> Response {
         alt_screen,
         text,
     }
+}
+
+fn handle_share_pane(
+    pane: Option<u64>,
+    scrollback: ShareScrollback,
+    ctx: &mut AppContext,
+) -> Response {
+    let (pane_wire, view_handle) = match resolve_terminal_view(pane, ctx) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+    let scrollback_type = match scrollback {
+        ShareScrollback::None => SharedSessionScrollbackType::None,
+        ShareScrollback::All => SharedSessionScrollbackType::All,
+    };
+
+    view_handle.update(ctx, |view, ctx| {
+        let status = view.model.lock().shared_session_status().clone();
+        if status.is_viewer() {
+            return Response::Error {
+                message: format!("pane {pane_wire} is viewing a shared session"),
+            };
+        }
+        if !status.is_sharer() {
+            let share_source = SharedSessionSource::user(
+                view.active_conversation_task_id(ctx)
+                    .map(|task| task.to_string()),
+            );
+            view.attempt_to_share_session(
+                scrollback_type,
+                Some(SharedSessionActionSource::NonUser),
+                share_source,
+                true,
+                ctx,
+            );
+        }
+        Response::ShareStarted { pane: pane_wire }
+    })
+}
+
+fn handle_share_pane_link(pane: Option<u64>, ctx: &mut AppContext) -> Response {
+    let (pane_wire, view_handle) = match resolve_terminal_view(pane, ctx) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+
+    if let Some(session_id) = SharedSessionManager::as_ref(ctx).session_id(&view_handle.id()) {
+        return Response::ShareLink {
+            pane: pane_wire,
+            url: join_link(&session_id),
+        };
+    }
+
+    let is_sharer = view_handle
+        .as_ref(ctx)
+        .model
+        .lock()
+        .shared_session_status()
+        .is_sharer();
+    if is_sharer {
+        Response::SharePending { pane: pane_wire }
+    } else {
+        Response::Error {
+            message: format!("pane {pane_wire} is not sharing; run pane share first"),
+        }
+    }
+}
+
+fn handle_unshare_pane(pane: Option<u64>, ctx: &mut AppContext) -> Response {
+    let (pane_wire, view_handle) = match resolve_terminal_view(pane, ctx) {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+
+    view_handle.update(ctx, |view, ctx| {
+        let is_sharer = view.model.lock().shared_session_status().is_sharer();
+        if !is_sharer {
+            return Response::Error {
+                message: format!("pane {pane_wire} is not sharing"),
+            };
+        }
+        view.stop_sharing_session(SharedSessionActionSource::NonUser, ctx);
+        Response::ShareStopped { pane: pane_wire }
+    })
 }
 
 fn block_to_entry(b: &crate::terminal::model::block::Block, pane_wire: u64) -> BlockEntry {

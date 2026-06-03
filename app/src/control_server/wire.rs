@@ -17,6 +17,12 @@ pub enum Request {
     /// grid for TUI apps (vim/tmux/less/…) that `ReadPane`'s block model can't
     /// see.
     ReadScreen { pane: Option<u64> },
+    /// Start sharing a pane's session. Session setup completes asynchronously.
+    SharePane { pane: Option<u64>, scrollback: ShareScrollback },
+    /// Return the share link for a pane once the session id is available.
+    SharePaneLink { pane: Option<u64> },
+    /// Stop sharing a pane's session.
+    UnsharePane { pane: Option<u64> },
     /// Open a new tab. With `config`, opens the saved tab config whose `name`
     /// matches (e.g. an SSH tab); otherwise opens a plain terminal tab.
     NewTab { config: Option<String> },
@@ -43,6 +49,13 @@ pub enum SplitDir {
     Down,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareScrollback {
+    None,
+    All,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
@@ -54,6 +67,10 @@ pub enum Response {
     /// Rendered screen text for a pane. `alt_screen` is true when the text came
     /// from a TUI/full-screen app's alternate screen.
     Screen { pane: u64, alt_screen: bool, text: String },
+    ShareStarted { pane: u64 },
+    ShareLink { pane: u64, url: String },
+    SharePending { pane: u64 },
+    ShareStopped { pane: u64 },
     Blocks { blocks: Vec<BlockEntry> },
     Block { block: BlockEntry },
     Error { message: String },
