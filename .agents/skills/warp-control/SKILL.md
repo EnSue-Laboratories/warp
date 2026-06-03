@@ -3,11 +3,12 @@ name: warp-control
 description: |
   Drive a running Warp instance from the shell via `warp-oss control …` — list
   tabs, send commands to specific panes, read block output back, open/close
-  tabs, split panes. Use when you want to run a command in a particular Warp
-  tab/pane (not your own shell), inspect what's on screen in another Warp tab,
-  monitor or coordinate work across panes, or open/close/split tabs from
+  tabs, split panes, and start/stop native Warp session sharing. Use when you
+  want to run a command in a particular Warp tab/pane (not your own shell),
+  inspect what's on screen in another Warp tab, monitor or coordinate work
+  across panes, share a pane to a phone/browser, or open/close/split tabs from
   outside Warp. Requires a running Warp build with control-socket support
-  (`feat/control-cli` branch, socket at
+  (current fork/master or `feat/control-cli`, socket at
   `~/Library/Application Support/dev.warp.WarpOss/control.sock`).
 ---
 
@@ -21,6 +22,7 @@ Use the `warp-oss control` CLI whenever you need to **read or write inside a run
 - "What's on the active tab" / "What did that command print" — `tab list` + `pane read`
 - "Open a fresh tab for the deploy" — `tab new`
 - "Split this pane to the left" — `pane split`
+- "Share this pane to my phone" — `pane share` + `pane share-link`
 - "Close that scratch tab" — `tab close`
 
 If the user is just asking to run a one-off command and doesn't care which terminal it lands in, **don't** route through this skill — just use Bash. Use this skill when the destination terminal matters (a specific tab, a specific shell, an SSH session the user is in, etc.).
@@ -29,7 +31,7 @@ If the user is just asking to run a one-off command and doesn't care which termi
 
 1. **Check Warp is running first.** `pgrep -lf warp-oss` should show at least the parent process. If not, the CLI will fail with `could not connect to Warp control socket … — is Warp running?`. Don't try to start Warp from this skill; ask the user.
 2. **Always start with `tab list` and `pane list`.** Don't guess IDs. The active/focused markers in those tables drive every other call.
-3. **Read before assuming a command finished.** `pane send` returns `ok` as soon as the command is *queued*, not when it completes. Sleep 1–3s (longer for slow commands), then `pane read --pane <id> --blocks 2` to capture the result block.
+3. **Read before assuming a command finished.** `pane send` returns `ok` as soon as the command is accepted/queued, not when it completes. Sleep 1–3s (longer for slow commands), then `pane read --pane <id> --blocks 2` to capture the result block.
 4. **Distinguish "active" from "focused".** A tab is *active* if it's the foreground tab in the workspace. A pane within a tab is *focused* if it's the one that would receive keystrokes if the user typed. When `--pane` is omitted, the CLI targets the focused pane of the active tab.
 5. **Don't restart Warp casually.** Killing `warp-oss` wipes all live shells (SSH sessions especially). Tabs are restored from disk on relaunch; their PTYs are not.
 
@@ -90,7 +92,8 @@ cat /tmp/scratch.txt   # → hello
 
 Where the binary lives (use the Applications bundle by default):
 
-- `/Applications/WarpOss.app/Contents/MacOS/warp-oss` ← **preferred / canonical install**
+- `/Applications/WarpOss.app/Contents/Resources/bin/warp-oss` ← **preferred shell wrapper**
+- `/Applications/WarpOss.app/Contents/MacOS/warp-oss` ← canonical app binary
 - `/Volumes/ThinkPlus/warp-target/debug/warp-oss` (fresh local build — only when testing an unreleased build)
 
 The `warp` shell alias points at the same binary. The `control` command is just a *client* of the running Warp GUI (the server) over the shared socket, so which binary you invoke doesn't change behavior — default to the `/Applications` one.
@@ -98,7 +101,7 @@ The `warp` shell alias points at the same binary. The `control` command is just 
 ## Standard workflow
 
 ```bash
-WARP=/Applications/WarpOss.app/Contents/MacOS/warp-oss   # canonical install
+WARP=/Applications/WarpOss.app/Contents/Resources/bin/warp-oss   # canonical install wrapper
 
 # 1) Survey state — identify which tab/pane you want to talk to.
 "$WARP" control tab list
@@ -149,7 +152,7 @@ done
 **Open a fresh tab for SSH:**
 ```bash
 "$WARP" control tab new
-sleep 1
+sleep 2
 # Newest tab is the now-active one — `tab list` shows it, the new pane is
 # also the focused one, so `--pane` can be omitted.
 "$WARP" control pane send ssh user@host
@@ -184,7 +187,7 @@ until URL=$("$WARP" control pane share-link --pane 65777 2>/dev/null) && [ -n "$
 echo "$URL"                                         # → https://app.warp.dev/session/<id>  (open on any device)
 "$WARP" control pane unshare --pane 65777           # stop sharing when done
 ```
-`pane share-link` prints the bare URL on success (script-friendly), `sharing pending …` while setup is still in flight, and errors if the pane isn't sharing. `--scrollback all` includes prior scrollback in the shared view; default `none` shares only from now on. Viewers join read-only or as executor depending on the role Warp grants them.
+`pane share-link` prints the bare URL on success (script-friendly), `sharing pending …` while setup is still in flight, and errors if the pane isn't sharing. `--scrollback all` includes prior scrollback in the shared view; default `none` shares only from now on. Viewers join read-only or as executor depending on the role Warp grants them. Current caveat: sharing setup is async, so backend failures such as quota/plan limits may only appear in the Warp UI/logs after `pane share` has already printed `pending`.
 
 ## Failure modes you'll see
 
@@ -194,7 +197,11 @@ echo "$URL"                                         # → https://app.warp.dev/s
 | `pane <id> not found` | Stale id from before a tab was closed / app restarted. | Re-run `pane list` and use the fresh id. |
 | `tab <id> not found` (for `tab close`) | Same as above. | Re-run `tab list`. Note `tab close` accepts either the tab id OR the index. |
 | `pane send` returns `ok` but `pane read` shows nothing | Shell hasn't run yet, or you're reading too few blocks. | `sleep 2; pane read --blocks 5`. Long commands need more time. |
-| `pane send` returns `ok` but the command NEVER runs (text just sits in the prompt) | The pane wasn't ready to execute: still bootstrapping (freshly-created tab) or busy with an active/long-running command. `send` silently sets the text "pending" and still returns `ok` — a false success. (Known bug: EnSue-Laboratories/warp#15.) | Only `send` into an **idle, bootstrapped** pane (verify via `pane read`/`pane screen` first). For an interactive/blocked program, use `pane write` + `pane keystroke` instead. Don't re-send — it stacks more pending text. |
+| `pane send` returns `pane cannot execute commands while another command is already running` or `shell bootstrapping is still in progress` | The pane is not executable right now. PR #16 fixed the old silent false-`Ok` for most of these cases. | Wait for the pane to become idle/bootstrapped, then retry. For interactive programs, use `pane write` + `pane keystroke`. |
+| Immediate back-to-back `pane send` calls both return `ok`, but the second command fuses into the first output/prompt | Remaining race before Warp marks the first command as running. | After `pane send`, wait briefly or poll `pane read`/`pane screen` before sending another shell command. |
+| Fresh `tab new` followed immediately by `pane send` returns a bootstrapping error but the command later runs anyway | Known side-effect-on-error path: the command can be left pending during shell startup. | After `tab new`, wait a couple seconds and re-run `pane list`/`pane read` before the first `pane send`. |
+| `pane share` prints `pending`, then `pane share-link` says the pane is not sharing | Async share setup failed after the CLI returned. Today the CLI does not surface the backend reason. | Check the Warp UI/logs for quota/auth/network errors; retry after fixing the account/plan issue. |
+| `--output-format json` / `WARP_OUTPUT_FORMAT=json` still prints pretty tables | Output-format plumbing is accepted but not wired for control responses yet. | Don't build scripts on JSON output until this is fixed; parse the stable table text or use a lower-level client. |
 
 ## Don't
 

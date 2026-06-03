@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Notes for Claude Code sessions. For general engineering guidance see `WARP.md`.
+Notes for Codex sessions. For general engineering guidance see `WARP.md`.
 
 ## Project intent
 
@@ -10,7 +10,7 @@ This fork is being shaped for **the maintainer's personal use of Warp**, not for
 
 A shell-invokable CLI that **controls the running Warp instance** over a local Unix-domain socket. Outside processes (other shells, scripts, AI agents, Raycast) drive Warp through it. This is the inversion of Warp's existing MCP support (`app/src/ai/mcp/parsing.rs`), which only lets Warp's own agent *consume* MCP servers. It's a terminal-automation surface, not an AI feature, so BYOK / `SoloUserByok` gating does **not** apply.
 
-There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that documents the day-to-day usage; load it whenever you (Claude) want to interact with a running Warp instance.
+There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that documents the day-to-day usage; load it whenever you (Codex) want to interact with a running Warp instance.
 
 ### What's wired today
 
@@ -68,7 +68,7 @@ Architectural seams that look promising:
 Design — CLI only, no MCP layer:
 1. The running Warp app opens a Unix-domain socket (e.g. `~/Library/Application Support/dev.warp.WarpOss/control-<pid>.sock`) and serves a small JSON-RPC protocol.
 2. The same `warp-oss` binary grows new CLI subcommands (`warp session/pane/block/run`) that connect to that socket and proxy the request.
-3. **No MCP server.** Agents that want to drive Warp shell out to the CLI directly — Claude Code, Cursor, Codex, and friends all support running bash. MCP would just be an extra hop.
+3. **No MCP server.** Agents that want to drive Warp shell out to the CLI directly — Codex, Cursor, Codex, and friends all support running bash. MCP would just be an extra hop.
 
 Reference designs to borrow from:
 - `tmux send-keys` / `tmux capture-pane` / `tmux -C` control mode — closest analogue.
@@ -124,7 +124,7 @@ Key facts from the code:
    - `Pane(PaneCommand::{List, Focus, Read, Send})`
    - `Block(BlockCommand::{List, Read, Tail, Wait})`
    - `Run { command: String, pane: Option<String>, wait: bool }` (sugar = `pane send` + `block wait`)
-   
+
    These resolve to client code that opens `control.sock` and sends a JSON-RPC request.
 
 2. **New worker / launch-mode-agnostic singleton** in the main GUI app:
