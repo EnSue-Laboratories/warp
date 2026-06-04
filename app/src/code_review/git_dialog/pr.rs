@@ -16,7 +16,7 @@ use warpui::{SingletonEntity, ViewContext};
 use crate::ai::generate_code_review_content::api::{GenerateCodeReviewContentRequest, OutputType};
 use crate::code_review::git_dialog::{
     interactive_path_future, render_branch_section, render_file_changes_box,
-    should_send_git_ops_ai_request, show_toast, user_facing_git_error, GitDialog, GitDialogAction,
+    should_send_git_ops_ai_request, show_git_error_toast, GitDialog, GitDialogAction,
     GitDialogEvent, GitDialogMode,
 };
 use crate::code_review::telemetry_event::{
@@ -155,8 +155,9 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                     show_pr_created_toast(&pr_info, ctx);
                 }
                 Err(err) => {
-                    log::error!("Failed to create PR: {err}");
-                    show_toast(user_facing_git_error(&err.to_string()), ctx);
+                    let error = err.to_string();
+                    log::error!("Failed to create PR: {error}");
+                    show_git_error_toast(&error, ctx);
                 }
             }
             send_telemetry_from_ctx!(

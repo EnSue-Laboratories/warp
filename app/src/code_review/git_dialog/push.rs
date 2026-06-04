@@ -20,7 +20,7 @@ use warpui::ViewContext;
 use crate::code::editor::{add_color, remove_color};
 use crate::code_review::git_dialog::{
     interactive_path_future, render_branch_section, render_chevron_icon, render_file_list,
-    show_toast, user_facing_git_error, GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode,
+    show_git_error_toast, show_toast, GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode,
 };
 use crate::code_review::telemetry_event::{
     CodeReviewTelemetryEvent, GitDialogStatus, GitOperationKind,
@@ -162,8 +162,9 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                     show_toast(toast_msg, ctx);
                 }
                 Err(e) => {
-                    log::error!("Push failed: {e}");
-                    show_toast(user_facing_git_error(&e.to_string()), ctx);
+                    let error = e.to_string();
+                    log::error!("Push failed: {error}");
+                    show_git_error_toast(&error, ctx);
                 }
             }
             send_telemetry_from_ctx!(
