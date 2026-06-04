@@ -11,7 +11,14 @@ pub enum Request {
     Ping,
     ListTabs,
     ListPanes { tab: Option<u64> },
-    SendInput { pane: Option<u64>, text: String },
+    SendInput {
+        pane: Option<u64>,
+        text: String,
+        #[serde(default)]
+        wait: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     ReadPane { pane: Option<u64>, blocks: usize },
     /// Render a pane's current screen to text. Captures the alternate-screen
     /// grid for TUI apps (vim/tmux/less/…) that `ReadPane`'s block model can't
@@ -73,6 +80,11 @@ pub enum Response {
     ShareStopped { pane: u64 },
     Blocks { blocks: Vec<BlockEntry> },
     Block { block: BlockEntry },
+    SendTimedOut {
+        pane: u64,
+        timeout_ms: u64,
+        block: BlockEntry,
+    },
     Error { message: String },
 }
 
@@ -105,4 +117,34 @@ pub struct BlockEntry {
     pub pwd: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Request;
+
+    #[test]
+    fn send_input_defaults_to_no_wait_for_old_clients() {
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "kind": "send_input",
+            "pane": 42,
+            "text": "echo hi"
+        }))
+        .expect("old send_input frame should deserialize");
+
+        let Request::SendInput {
+            pane,
+            text,
+            wait,
+            timeout_ms,
+        } = request
+        else {
+            panic!("expected send_input request");
+        };
+
+        assert_eq!(pane, Some(42));
+        assert_eq!(text, "echo hi");
+        assert_eq!(wait, false);
+        assert_eq!(timeout_ms, None);
+    }
 }

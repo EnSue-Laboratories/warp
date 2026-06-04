@@ -31,7 +31,7 @@ If the user is just asking to run a one-off command and doesn't care which termi
 
 1. **Check Warp is running first.** `pgrep -lf warp-oss` should show at least the parent process. If not, the CLI will fail with `could not connect to Warp control socket … — is Warp running?`. Don't try to start Warp from this skill; ask the user.
 2. **Always start with `tab list` and `pane list`.** Don't guess IDs. The active/focused markers in those tables drive every other call.
-3. **Read before assuming a command finished.** `pane send` returns `ok` as soon as the command is accepted/queued, not when it completes. Sleep 1–3s (longer for slow commands), then `pane read --pane <id> --blocks 2` to capture the result block.
+3. **Use `--wait` for one-shot shell commands.** `pane send --wait [--timeout <secs>]` blocks on the exact block it submitted and prints the output plus exit code. Plain `pane send` still returns `ok` as soon as the command is accepted/queued; reserve no-wait mode for dev servers, tails, long-running commands, and TUI launches.
 4. **Distinguish "active" from "focused".** A tab is *active* if it's the foreground tab in the workspace. A pane within a tab is *focused* if it's the one that would receive keystrokes if the user typed. When `--pane` is omitted, the CLI targets the focused pane of the active tab.
 5. **Don't restart Warp casually.** Killing `warp-oss` wipes all live shells (SSH sessions especially). Tabs are restored from disk on relaunch; their PTYs are not.
 
@@ -46,7 +46,7 @@ warp-oss control tab   close <id>
 warp-oss control tab   focus <id>
 
 warp-oss control pane  list      [--tab <id>]
-warp-oss control pane  send      [--pane <id>] "<command>"    # block exec; pane is a --FLAG (gotcha below)
+warp-oss control pane  send      [--pane <id>] [--wait] [--timeout <secs>] "<command>"  # block exec; pane is a --FLAG
 warp-oss control pane  write     [--pane <id>] "<text>"       # raw bytes to PTY, no \n
 warp-oss control pane  keystroke [--pane <id>] <key>          # named key / ctrl-<char>
 warp-oss control pane  read      [--pane <id>] [--blocks N]   # default N=10
@@ -66,12 +66,13 @@ warp-oss control block read  <id>                             # id from `block l
 
 | Goal | Use | Notes |
 |---|---|---|
-| Run a shell command and capture its output as a Warp block | `pane send` | The normal case. Goes through Warp's command-block submission. |
+| Run a shell command and capture its output as a Warp block | `pane send --wait` | The normal agent case. Goes through Warp's command-block submission and waits for completion. |
+| Start a long-running command, dev server, tail, or TUI | `pane send` without `--wait` | Fire-and-forget. Follow with `pane read`, `pane screen`, or raw input calls as appropriate. |
 | Drive a TUI app (vim, fzf, less, claude, htop, ssh password prompts) | `pane write` + `pane keystroke` | Bytes go straight to the PTY. No newline appended unless you ask for one. |
 | **Read what a TUI app is showing** (vim, tmux, less, claude, htop) | `pane screen` | Captures the live screen grid. `pane read` only sees command *blocks*, so it's blind inside full-screen apps — use `pane screen` there. Output is tagged `(alt-screen)` when a TUI is active, `(primary)` otherwise. |
 | Send a special key (Enter, Esc, arrows, Tab, Backspace, function keys, ctrl-c…) | `pane keystroke` | Recognized names: `enter` `return` `tab` `esc` `escape` `space` `backspace` `delete` `ins` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `f1`–`f12`. Chords: `ctrl-<char>` or `c-<char>` (e.g. `ctrl-c`, `ctrl-d`, `ctrl-[` = Esc, `ctrl-?` = Backspace). |
 
-**Mixing the two paths is fine.** A common pattern: `pane send --pane <id> vim file.txt` to launch the TUI (because `send` waits for the shell prompt and runs the binary), then switch to `pane write` / `pane keystroke` for everything inside vim.
+**Mixing the two paths is fine.** A common pattern: `pane send --pane <id> vim file.txt` to launch the TUI through the shell, then switch to `pane write` / `pane keystroke` for everything inside vim.
 
 `pane send` accepts the command as trailing args, so you can usually skip quoting (`pane send --pane 1990 ls -la /tmp` works). Quote only when the command contains shell operators you want the *target* pane's shell to interpret (pipes, redirects, `&&`, etc.).
 
@@ -107,18 +108,18 @@ WARP=/Applications/WarpOss.app/Contents/Resources/bin/warp-oss   # canonical ins
 "$WARP" control tab list
 "$WARP" control pane list
 
-# 2) Send the command. `--pane` is optional and defaults to the focused pane —
+# 2) Send the command and wait for the submitted block. `--pane` is optional and defaults to the focused pane —
 #    omit it when you want to talk to whatever the user is currently looking at.
-"$WARP" control pane send --pane 1990 "ls -la && pwd"
+"$WARP" control pane send --pane 1990 --wait --timeout 120 "ls -la && pwd"
 
-# 3) Wait briefly for the shell to execute, then read the result.
-sleep 2
-"$WARP" control pane read --pane 1990 --blocks 2
+# 3) Inspect the printed block. It contains command, output, exit_code, and pwd.
 ```
 
-The block immediately above the trailing precmd block is the one your command produced — it contains `command`, `output`, `exit_code`, and `pwd`.
+For no-wait commands, use `pane read --pane <id> --blocks 2` after the command has had time to emit a block.
 
 ## Reading output
+
+`pane send --wait` prints the submitted block in the same shape as `pane read`. Use `pane read` for follow-up polling, no-wait commands, TUI launches, and long-running processes.
 
 `pane read` prints the last N blocks, each formatted as:
 
@@ -136,14 +137,12 @@ Trailing `precmd-…` blocks with no `$` line are idle shell prompts — skip th
 
 **Run a command and capture its output in one go:**
 ```bash
-"$WARP" control pane send --pane 1990 "<cmd>"
-sleep 2
-"$WARP" control pane read --pane 1990 --blocks 2
+"$WARP" control pane send --pane 1990 --wait "<cmd>"
 ```
 
 **Tail a long-running command** — re-read every few seconds:
 ```bash
-"$WARP" control pane send --pane 1990 "cargo test --workspace 2>&1"
+"$WARP" control pane send --pane 1990 "cargo test --workspace 2>&1"  # no --wait: this may run for a while
 while sleep 5; do
   "$WARP" control pane read --pane 1990 --blocks 1
 done
@@ -196,10 +195,10 @@ echo "$URL"                                         # → https://app.warp.dev/s
 | `could not connect to Warp control socket … — is Warp running?` | No Warp instance, or one is mid-shutdown. | `pgrep -lf warp-oss`; if missing, ask the user to launch it. |
 | `pane <id> not found` | Stale id from before a tab was closed / app restarted. | Re-run `pane list` and use the fresh id. |
 | `tab <id> not found` (for `tab close`) | Same as above. | Re-run `tab list`. Note `tab close` accepts either the tab id OR the index. |
-| `pane send` returns `ok` but `pane read` shows nothing | Shell hasn't run yet, or you're reading too few blocks. | `sleep 2; pane read --blocks 5`. Long commands need more time. |
+| Plain `pane send` returns `ok` but `pane read` shows nothing | No-wait mode accepted/queued the command before output was available, or you're reading too few blocks. | Prefer `pane send --wait` for one-shot commands. Otherwise `sleep 2; pane read --blocks 5`; long commands need more time. |
 | `pane send` returns `pane cannot execute commands while another command is already running` or `shell bootstrapping is still in progress` | The pane is not executable right now. PR #16 fixed the old silent false-`Ok` for most of these cases. | Wait for the pane to become idle/bootstrapped, then retry. For interactive programs, use `pane write` + `pane keystroke`. |
-| Immediate back-to-back `pane send` calls both return `ok`, but the second command fuses into the first output/prompt | Remaining race before Warp marks the first command as running. | After `pane send`, wait briefly or poll `pane read`/`pane screen` before sending another shell command. |
-| Fresh `tab new` followed immediately by `pane send` returns a bootstrapping error but the command later runs anyway | Known side-effect-on-error path: the command can be left pending during shell startup. | After `tab new`, wait a couple seconds and re-run `pane list`/`pane read` before the first `pane send`. |
+| Immediate back-to-back no-wait `pane send` calls both return `ok`, but the second command fuses into the first output/prompt | Remaining race before Warp marks the first command as running. | Use `--wait` for sequencing. For no-wait commands, wait briefly or poll `pane read`/`pane screen` before sending another shell command. |
+| Fresh `tab new` followed immediately by `pane send --wait` returns a bootstrapping error but the command later runs anyway | Known side-effect-on-error path: the command can be left pending during shell startup. | After `tab new`, wait a couple seconds and re-run `pane list`/`pane read` before the first `pane send`. |
 | `pane share` prints `pending`, then `pane share-link` says the pane is not sharing | Async share setup failed after the CLI returned. Today the CLI does not surface the backend reason. | Check the Warp UI/logs for quota/auth/network errors; retry after fixing the account/plan issue. |
 | `--output-format json` / `WARP_OUTPUT_FORMAT=json` still prints pretty tables | Output-format plumbing is accepted but not wired for control responses yet. | Don't build scripts on JSON output until this is fixed; parse the stable table text or use a lower-level client. |
 
