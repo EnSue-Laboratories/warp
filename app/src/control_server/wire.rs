@@ -49,6 +49,7 @@ pub enum Request {
         case_insensitive: bool,
         since: WaitForTextSince,
         blocks: usize,
+        block_field: WaitForTextBlockField,
         max_output_bytes: usize,
         json: bool,
     },
@@ -247,6 +248,14 @@ impl WaitForTextMode {
 pub enum WaitForTextSince {
     All,
     Now,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitForTextBlockField {
+    Output,
+    Command,
+    Both,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

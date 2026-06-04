@@ -20,7 +20,7 @@ There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that docume
 | `pane list [--tab <id>]` / `pane send [--pane <id>] [--wait] [--timeout <secs>] <cmd…>` / `pane read [--pane <id>] [--blocks N]` | ✅ |
 | `pane write [--pane <id>] "<text>"` / `pane keystroke [--pane <id>] <key>` | ✅ |
 | `pane screen [--pane <id>]` (capture the live screen grid, incl. TUI/alt-screen) | ✅ |
-| `pane snapshot [--pane <id>] [--blocks N] [--no-screen] [--json]` / `pane wait-for-text [--pane <id>] [--mode screen\|blocks\|both] [--since all\|now] [--regex] [--timeout <secs>] <text>` | ✅ |
+| `pane snapshot [--pane <id>] [--blocks N] [--no-screen] [--json]` / `pane wait-for-text [--pane <id>] [--mode screen\|blocks\|both] [--block-field output\|command\|both] [--since all\|now] [--regex] [--timeout <secs>] <text>` | ✅ |
 | `pane focus <id>` / `pane close <id>` / `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
 | `pane share [--pane <id>] [--scrollback none\|all]` / `pane share-link [--pane <id>]` / `pane unshare [--pane <id>]` | ✅ |
 | `block list [--pane <id>] [--limit N]` / `block read <id>` | ✅ |
@@ -39,7 +39,7 @@ The CLI reports `active` for the focused tab and `focused` for the focused pane 
 
 `keystroke` accepts named keys (`enter` `tab` `esc` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `delete` `ins` `backspace` `space` `f1`–`f12`) and `ctrl-<char>` chords. See `keystroke_to_bytes` in `app/src/control_server/mod.rs`.
 
-**Agent-readable pane state.** `pane snapshot --json` returns a versioned JSON object with pane metadata, the current screen text, recent blocks, capture timestamp, and truncation flags. `pane wait-for-text` polls the live screen and/or recent blocks until literal text or a regex appears; use `--since now` when waiting for newly-emitted prompts/output, and `--json` when a caller needs the match plus the final snapshot.
+**Agent-readable pane state.** `pane snapshot --json` returns a versioned JSON object with pane metadata, the current screen text, recent blocks, capture timestamp, and truncation flags. `pane wait-for-text` polls the live screen and/or recent block output until literal text or a regex appears; use `--since now` when waiting for newly-emitted prompts/output, `--block-field command|both` only when command text should count as a match, and `--json` when a caller needs the match plus the final snapshot.
 
 ### Architecture (where the code lives)
 

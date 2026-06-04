@@ -3,8 +3,8 @@ use clap::Parser;
 use crate::{Args, CliCommand, Command};
 
 use super::{
-    ControlCommand, PaneCommand, PaneSnapshotArgs, SendInputArgs, WaitForTextArgs, WaitForTextMode,
-    WaitForTextSince,
+    ControlCommand, PaneCommand, PaneSnapshotArgs, SendInputArgs, WaitForTextArgs,
+    WaitForTextBlockField, WaitForTextMode, WaitForTextSince,
 };
 
 fn parse_pane_send<const N: usize>(args: [&str; N]) -> SendInputArgs {
@@ -152,6 +152,7 @@ fn pane_wait_for_text_defaults_to_both_existing_text() {
     assert_eq!(args.case_insensitive, false);
     assert!(matches!(args.since, WaitForTextSince::All));
     assert_eq!(args.blocks, 10);
+    assert!(matches!(args.block_field, WaitForTextBlockField::Output));
     assert_eq!(args.max_output_bytes, 65_536);
     assert_eq!(args.json, false);
     assert_eq!(args.text, "ready");
@@ -176,6 +177,8 @@ fn pane_wait_for_text_accepts_regex_alias_and_tuning_flags() {
         "now",
         "--blocks",
         "3",
+        "--block-field",
+        "both",
         "--max-output-bytes",
         "99",
         "--json",
@@ -189,6 +192,7 @@ fn pane_wait_for_text_accepts_regex_alias_and_tuning_flags() {
     assert_eq!(args.case_insensitive, true);
     assert!(matches!(args.since, WaitForTextSince::Now));
     assert_eq!(args.blocks, 3);
+    assert!(matches!(args.block_field, WaitForTextBlockField::Both));
     assert_eq!(args.max_output_bytes, 99);
     assert_eq!(args.json, true);
     assert_eq!(args.text, "READY|DONE");

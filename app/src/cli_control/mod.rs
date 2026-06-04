@@ -10,8 +10,8 @@ use warp_cli::control::{
     BlockCommand, BlockIdArg, BlockListArgs, ControlCommand, KeystrokeArgs, PaneCommand, PaneIdArg,
     PaneListArgs, PaneReadArgs, PaneScreenArgs, PaneShareArgs, PaneSnapshotArgs, PaneTargetArgs,
     SendInputArgs, ShareScrollback as CliShareScrollback, SplitArgs, SplitDirection, TabCommand,
-    TabIdArg, WaitForTextArgs, WaitForTextMode as CliWaitForTextMode,
-    WaitForTextSince as CliWaitForTextSince, WriteBytesArgs,
+    TabIdArg, WaitForTextArgs, WaitForTextBlockField as CliWaitForTextBlockField,
+    WaitForTextMode as CliWaitForTextMode, WaitForTextSince as CliWaitForTextSince, WriteBytesArgs,
 };
 use warp_cli::GlobalOptions;
 use warpui::AppContext;
@@ -20,7 +20,8 @@ use crate::control_server::framing::{read_frame_sync, write_frame_sync};
 use crate::control_server::socket_path;
 use crate::control_server::wire::{
     BlockEntry, PaneSnapshot, PaneSummary, Request, Response, ShareScrollback, SplitDir,
-    TabSummary, TextMatch, TextMatchSource, WaitForTextMode, WaitForTextSince,
+    TabSummary, TextMatch, TextMatchSource, WaitForTextBlockField, WaitForTextMode,
+    WaitForTextSince,
 };
 
 /// Dispatch `warp control …` from the full CLI plumbing (after AppContext
@@ -132,6 +133,7 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
             case_insensitive,
             since,
             blocks,
+            block_field,
             max_output_bytes,
             json,
             text,
@@ -154,6 +156,11 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
                 CliWaitForTextSince::Now => WaitForTextSince::Now,
             },
             blocks,
+            block_field: match block_field {
+                CliWaitForTextBlockField::Output => WaitForTextBlockField::Output,
+                CliWaitForTextBlockField::Command => WaitForTextBlockField::Command,
+                CliWaitForTextBlockField::Both => WaitForTextBlockField::Both,
+            },
             max_output_bytes,
             json,
         },

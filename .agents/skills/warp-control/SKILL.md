@@ -55,7 +55,7 @@ warp-oss control pane  keystroke [--pane <id>] <key>          # named key / ctrl
 warp-oss control pane  read      [--pane <id>] [--blocks N]   # default N=10
 warp-oss control pane  screen    [--pane <id>]                # live screen grid
 warp-oss control pane  snapshot  [--pane <id>] [--blocks N] [--no-screen] [--json]
-warp-oss control pane  wait-for-text [--pane <id>] [--mode screen|blocks|both] [--since all|now] [--regex] [--timeout <secs>] [--json] "<text>"
+warp-oss control pane  wait-for-text [--pane <id>] [--mode screen|blocks|both] [--block-field output|command|both] [--since all|now] [--regex] [--timeout <secs>] [--json] "<text>"
 warp-oss control pane  focus     <id>                         # also activates the owning tab
 warp-oss control pane  close     <id>
 warp-oss control pane  split     [--pane <id>] --direction <left|right|up|down>
@@ -77,7 +77,7 @@ warp-oss control block read  <id>                             # id from `block l
 | Drive a TUI app (vim, fzf, less, claude, htop, ssh password prompts) | `pane write` + `pane keystroke` | Bytes go straight to the PTY. No newline appended unless you ask for one. |
 | **Read what a TUI app is showing** (vim, tmux, less, claude, htop) | `pane screen` | Captures the live screen grid. `pane read` only sees command *blocks*, so it's blind inside full-screen apps — use `pane screen` there. Output is tagged `(alt-screen)` when a TUI is active, `(primary)` otherwise. |
 | Get machine-readable pane state for an agent | `pane snapshot --json` | Returns schema-versioned JSON with pane metadata, captured_at, screen text, recent blocks, and truncation flags. Alias: `pane snap`. |
-| Wait for a prompt, server readiness line, or TUI text | `pane wait-for-text` | Polls screen and/or blocks. Use `--since now` for new output, `--mode screen` for TUI-only waits, `--regex` for patterns, and `--json` for match + final snapshot. Alias: `pane wait`. |
+| Wait for a prompt, server readiness line, or TUI text | `pane wait-for-text` | Polls screen and/or recent block output by default. Use `--since now` for new output, `--mode screen` for TUI-only waits, `--regex` for patterns, `--block-field command|both` when command text should count, and `--json` for match + final snapshot. Alias: `pane wait`. |
 | Send a special key (Enter, Esc, arrows, Tab, Backspace, function keys, ctrl-c…) | `pane keystroke` | Recognized names: `enter` `return` `tab` `esc` `escape` `space` `backspace` `delete` `ins` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `f1`–`f12`. Chords: `ctrl-<char>` or `c-<char>` (e.g. `ctrl-c`, `ctrl-d`, `ctrl-[` = Esc, `ctrl-?` = Backspace). |
 
 **Mixing the two paths is fine.** A common pattern: `pane send --pane <id> vim file.txt` to launch the TUI through the shell, then switch to `pane write` / `pane keystroke` for everything inside vim.
@@ -141,6 +141,8 @@ When sequencing against text that may appear later, prefer `wait-for-text` to ma
 "$WARP" control pane wait-for-text --pane 1990 --since now --timeout 30 "Ready"
 "$WARP" control pane wait-for-text --pane 1990 --mode screen --regex "claude.*>" --case-insensitive
 ```
+
+For block waits, `--block-field output` is the default. That avoids false positives when a completion sentinel or target phrase appears in the submitted command itself. Use `--block-field command` only for command-submission checks, and `--block-field both` when either command text or output is intentionally acceptable.
 
 `pane read` prints the last N blocks, each formatted as:
 

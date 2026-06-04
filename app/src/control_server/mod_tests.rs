@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::wire::{
     BlockEntry, PaneScreenSnapshot, PaneSnapshot, PaneSnapshotPane, TextMatchSource,
-    WaitForTextMode, WaitForTextSince,
+    WaitForTextBlockField, WaitForTextMode, WaitForTextSince,
 };
 use super::*;
 
@@ -51,6 +51,7 @@ fn wait_options(text: &str) -> WaitForTextOptions {
         case_insensitive: false,
         since: WaitForTextSince::All,
         blocks: 10,
+        block_field: WaitForTextBlockField::Output,
         max_output_bytes: 65_536,
         json: false,
     }
@@ -76,10 +77,7 @@ fn since_now_ignores_text_present_in_the_baseline_prefix() {
     );
     let baseline = WaitForTextBaseline {
         screen_text: Some("old prompt\n".to_string()),
-        block_text_by_id: HashMap::from([(
-            "block-1".to_string(),
-            "echo old\nold output".to_string(),
-        )]),
+        block_text_by_id: HashMap::from([("block-1".to_string(), "old output".to_string())]),
     };
 
     let mut options = wait_options("old");
@@ -91,6 +89,28 @@ fn since_now_ignores_text_present_in_the_baseline_prefix() {
     assert_eq!(matched.source, TextMatchSource::Screen);
     assert_eq!(matched.text, "ready");
     assert_eq!(matched.line.as_deref(), Some("ready now"));
+}
+
+#[test]
+fn block_wait_ignores_command_text_by_default() {
+    let snapshot = snapshot(
+        None,
+        vec![block(
+            "block-1",
+            Some("printf '__DONE_SENTINEL__:%s\\n' \"$status\""),
+            "",
+        )],
+    );
+    let baseline = WaitForTextBaseline::default();
+
+    let mut options = wait_options("__DONE_SENTINEL__");
+    options.mode = WaitForTextMode::Blocks;
+    assert!(find_text_match(&snapshot, &options, &baseline).is_none());
+
+    options.block_field = WaitForTextBlockField::Command;
+    let matched = find_text_match(&snapshot, &options, &baseline).unwrap();
+    assert_eq!(matched.source, TextMatchSource::Block);
+    assert_eq!(matched.text, "__DONE_SENTINEL__");
 }
 
 #[test]

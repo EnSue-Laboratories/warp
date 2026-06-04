@@ -256,6 +256,10 @@ pub struct WaitForTextArgs {
     #[arg(long, default_value_t = 10)]
     pub blocks: usize,
 
+    /// Which part of recent blocks to search.
+    #[arg(long, value_enum, default_value_t = WaitForTextBlockField::Output)]
+    pub block_field: WaitForTextBlockField,
+
     /// Maximum bytes of text to include per field in JSON match/timeout snapshots.
     #[arg(long, default_value_t = 65_536)]
     pub max_output_bytes: usize,
@@ -333,6 +337,16 @@ pub enum WaitForTextSince {
     All,
     /// Only match text that appears after the wait starts.
     Now,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum WaitForTextBlockField {
+    /// Search block output only.
+    Output,
+    /// Search submitted command text only.
+    Command,
+    /// Search command text followed by output.
+    Both,
 }
 
 #[derive(Debug, Clone, Args)]

@@ -39,8 +39,8 @@ use crate::workspace::registry::WorkspaceRegistry;
 use crate::workspace::view::Workspace;
 use wire::{
     BlockEntry, PaneScreenSnapshot, PaneSnapshot, PaneSnapshotPane, PaneSummary, Request, Response,
-    ShareScrollback, SplitDir, TabSummary, TextMatch, TextMatchSource, WaitForTextMode,
-    WaitForTextSince,
+    ShareScrollback, SplitDir, TabSummary, TextMatch, TextMatchSource, WaitForTextBlockField,
+    WaitForTextMode, WaitForTextSince,
 };
 
 const SEND_WAIT_DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -175,6 +175,7 @@ async fn dispatch_async(request: Request, spawner: warpui::ModelSpawner<ControlM
             case_insensitive,
             since,
             blocks,
+            block_field,
             max_output_bytes,
             json,
         } => {
@@ -187,6 +188,7 @@ async fn dispatch_async(request: Request, spawner: warpui::ModelSpawner<ControlM
                 case_insensitive,
                 since,
                 blocks,
+                block_field,
                 max_output_bytes,
                 json,
             };
@@ -750,6 +752,7 @@ struct WaitForTextOptions {
     case_insensitive: bool,
     since: WaitForTextSince,
     blocks: usize,
+    block_field: WaitForTextBlockField,
     max_output_bytes: usize,
     json: bool,
 }
@@ -793,7 +796,7 @@ async fn handle_wait_for_text(
     let baseline = if options.since == WaitForTextSince::Now {
         let pane = options.pane;
         match dispatch_snapshot_for_wait(pane, blocks, include_screen, usize::MAX, &spawner).await {
-            Ok(snapshot) => WaitForTextBaseline::from_snapshot(&snapshot),
+            Ok(snapshot) => WaitForTextBaseline::from_snapshot(&snapshot, options.block_field),
             Err(response) => return response,
         }
     } else {
@@ -863,13 +866,13 @@ async fn dispatch_snapshot_for_wait(
 }
 
 impl WaitForTextBaseline {
-    fn from_snapshot(snapshot: &PaneSnapshot) -> Self {
+    fn from_snapshot(snapshot: &PaneSnapshot, block_field: WaitForTextBlockField) -> Self {
         Self {
             screen_text: snapshot.screen.as_ref().map(|screen| screen.text.clone()),
             block_text_by_id: snapshot
                 .blocks
                 .iter()
-                .map(|block| (block.id.clone(), block_search_text(block)))
+                .map(|block| (block.id.clone(), block_search_text(block, block_field)))
                 .collect(),
         }
     }
@@ -925,7 +928,7 @@ fn find_text_match(
 
     if options.mode.includes_blocks() {
         for block in snapshot.blocks.iter().rev() {
-            let text = block_search_text(block);
+            let text = block_search_text(block, options.block_field);
             let haystack = text_after_baseline(
                 &text,
                 baseline.block_text_by_id.get(&block.id).map(String::as_str),
@@ -951,13 +954,17 @@ fn find_text_match(
     None
 }
 
-fn block_search_text(block: &BlockEntry) -> String {
-    match &block.command {
-        Some(command) if !block.output.is_empty() => {
-            format!("{command}\n{}", block.output)
-        }
-        Some(command) => command.clone(),
-        None => block.output.clone(),
+fn block_search_text(block: &BlockEntry, field: WaitForTextBlockField) -> String {
+    match field {
+        WaitForTextBlockField::Output => block.output.clone(),
+        WaitForTextBlockField::Command => block.command.clone().unwrap_or_default(),
+        WaitForTextBlockField::Both => match &block.command {
+            Some(command) if !block.output.is_empty() => {
+                format!("{command}\n{}", block.output)
+            }
+            Some(command) => command.clone(),
+            None => block.output.clone(),
+        },
     }
 }
 
