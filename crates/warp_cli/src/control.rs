@@ -80,6 +80,14 @@ pub enum PaneCommand {
     /// inside full-screen/TUI apps like vim, tmux, and less.
     Screen(PaneScreenArgs),
 
+    /// Capture a structured pane snapshot with screen text and recent blocks.
+    #[command(alias = "snap")]
+    Snapshot(PaneSnapshotArgs),
+
+    /// Wait until text appears in a pane's screen or recent command blocks.
+    #[command(alias = "wait")]
+    WaitForText(WaitForTextArgs),
+
     /// Start sharing a pane's session and return immediately while setup is pending.
     Share(PaneShareArgs),
 
@@ -196,6 +204,75 @@ pub struct PaneScreenArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct PaneSnapshotArgs {
+    /// Pane id. Defaults to the focused pane if omitted.
+    #[arg(long)]
+    pub pane: Option<String>,
+
+    /// Number of most-recent blocks to include.
+    #[arg(long, default_value_t = 5)]
+    pub blocks: usize,
+
+    /// Omit the live screen grid from the snapshot.
+    #[arg(long)]
+    pub no_screen: bool,
+
+    /// Maximum bytes of text to include per block output/screen field.
+    #[arg(long, default_value_t = 65_536)]
+    pub max_output_bytes: usize,
+
+    /// Print the snapshot as structured JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct WaitForTextArgs {
+    /// Pane id. Defaults to the focused pane if omitted.
+    #[arg(long)]
+    pub pane: Option<String>,
+
+    /// Treat the text argument as a regular expression.
+    #[arg(long)]
+    pub regex: bool,
+
+    /// Maximum seconds to wait before returning a timeout error.
+    #[arg(long, default_value_t = 30)]
+    pub timeout: u64,
+
+    /// Where to search for the text.
+    #[arg(long, value_enum, default_value_t = WaitForTextMode::Both)]
+    pub mode: WaitForTextMode,
+
+    /// Ignore ASCII/Unicode case while matching.
+    #[arg(long)]
+    pub case_insensitive: bool,
+
+    /// Whether to match existing text or only text that appears after the wait starts.
+    #[arg(long, value_enum, default_value_t = WaitForTextSince::All)]
+    pub since: WaitForTextSince,
+
+    /// Number of most-recent blocks to search when block matching is enabled.
+    #[arg(long, default_value_t = 10)]
+    pub blocks: usize,
+
+    /// Which part of recent blocks to search.
+    #[arg(long, value_enum, default_value_t = WaitForTextBlockField::Output)]
+    pub block_field: WaitForTextBlockField,
+
+    /// Maximum bytes of text to include per field in JSON match/timeout snapshots.
+    #[arg(long, default_value_t = 65_536)]
+    pub max_output_bytes: usize,
+
+    /// Print match/timeout details as structured JSON.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Literal text or regular expression to wait for.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct PaneShareArgs {
     /// Pane id. Defaults to the focused pane if omitted.
     #[arg(long)]
@@ -242,6 +319,34 @@ pub enum ShareScrollback {
     None,
     /// Include all shareable prior scrollback.
     All,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum WaitForTextMode {
+    /// Search the live screen grid only.
+    Screen,
+    /// Search recent command blocks only.
+    Blocks,
+    /// Search both live screen and recent command blocks.
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum WaitForTextSince {
+    /// Match existing text and future text.
+    All,
+    /// Only match text that appears after the wait starts.
+    Now,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum WaitForTextBlockField {
+    /// Search block output only.
+    Output,
+    /// Search submitted command text only.
+    Command,
+    /// Search command text followed by output.
+    Both,
 }
 
 #[derive(Debug, Clone, Args)]

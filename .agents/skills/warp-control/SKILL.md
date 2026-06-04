@@ -2,8 +2,9 @@
 name: warp-control
 description: |
   Drive a running Warp instance from the shell via `warp-oss control …` — list
-  tabs, send commands to specific panes, read block output back, open/close
-  tabs, split panes, and start/stop native Warp session sharing. Use when you
+  tabs, send commands to specific panes, read block output back, capture
+  structured pane snapshots, wait for text, open/close tabs, split panes, and
+  start/stop native Warp session sharing. Use when you
   want to run a command in a particular Warp tab/pane (not your own shell),
   inspect what's on screen in another Warp tab, monitor or coordinate work
   across panes, share a pane to a phone/browser, or open/close/split tabs from
@@ -20,6 +21,8 @@ Use the `warp-oss control` CLI whenever you need to **read or write inside a run
 
 - "Run X in tab Y" — `pane send`
 - "What's on the active tab" / "What did that command print" — `tab list` + `pane read`
+- "Give me agent-readable pane state" — `pane snapshot --json`
+- "Wait until the prompt/output says X" — `pane wait-for-text`
 - "Open a fresh tab for the deploy" — `tab new`
 - "Split this pane to the left" — `pane split`
 - "Share this pane to my phone" — `pane share` + `pane share-link`
@@ -50,6 +53,9 @@ warp-oss control pane  send      [--pane <id>] [--wait] [--timeout <secs>] "<com
 warp-oss control pane  write     [--pane <id>] "<text>"       # raw bytes to PTY, no \n
 warp-oss control pane  keystroke [--pane <id>] <key>          # named key / ctrl-<char>
 warp-oss control pane  read      [--pane <id>] [--blocks N]   # default N=10
+warp-oss control pane  screen    [--pane <id>]                # live screen grid
+warp-oss control pane  snapshot  [--pane <id>] [--blocks N] [--no-screen] [--json]
+warp-oss control pane  wait-for-text [--pane <id>] [--mode screen|blocks|both] [--block-field output|command|both] [--since all|now] [--regex] [--timeout <secs>] [--json] "<text>"
 warp-oss control pane  focus     <id>                         # also activates the owning tab
 warp-oss control pane  close     <id>
 warp-oss control pane  split     [--pane <id>] --direction <left|right|up|down>
@@ -70,6 +76,8 @@ warp-oss control block read  <id>                             # id from `block l
 | Start a long-running command, dev server, tail, or TUI | `pane send` without `--wait` | Fire-and-forget. Follow with `pane read`, `pane screen`, or raw input calls as appropriate. |
 | Drive a TUI app (vim, fzf, less, claude, htop, ssh password prompts) | `pane write` + `pane keystroke` | Bytes go straight to the PTY. No newline appended unless you ask for one. |
 | **Read what a TUI app is showing** (vim, tmux, less, claude, htop) | `pane screen` | Captures the live screen grid. `pane read` only sees command *blocks*, so it's blind inside full-screen apps — use `pane screen` there. Output is tagged `(alt-screen)` when a TUI is active, `(primary)` otherwise. |
+| Get machine-readable pane state for an agent | `pane snapshot --json` | Returns schema-versioned JSON with pane metadata, captured_at, screen text, recent blocks, and truncation flags. Alias: `pane snap`. |
+| Wait for a prompt, server readiness line, or TUI text | `pane wait-for-text` | Polls screen and/or recent block output by default. Use `--since now` for new output, `--mode screen` for TUI-only waits, `--regex` for patterns, `--block-field command|both` when command text should count, and `--json` for match + final snapshot. Alias: `pane wait`. |
 | Send a special key (Enter, Esc, arrows, Tab, Backspace, function keys, ctrl-c…) | `pane keystroke` | Recognized names: `enter` `return` `tab` `esc` `escape` `space` `backspace` `delete` `ins` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `f1`–`f12`. Chords: `ctrl-<char>` or `c-<char>` (e.g. `ctrl-c`, `ctrl-d`, `ctrl-[` = Esc, `ctrl-?` = Backspace). |
 
 **Mixing the two paths is fine.** A common pattern: `pane send --pane <id> vim file.txt` to launch the TUI through the shell, then switch to `pane write` / `pane keystroke` for everything inside vim.
@@ -120,6 +128,21 @@ For no-wait commands, use `pane read --pane <id> --blocks 2` after the command h
 ## Reading output
 
 `pane send --wait` prints the submitted block in the same shape as `pane read`. Use `pane read` for follow-up polling, no-wait commands, TUI launches, and long-running processes.
+
+For automation, prefer `pane snapshot --json` over scraping `pane read` or `pane screen`. It includes the live screen plus recent blocks in one response:
+
+```bash
+"$WARP" control pane snapshot --pane 1990 --blocks 3 --json
+```
+
+When sequencing against text that may appear later, prefer `wait-for-text` to manual sleep loops:
+
+```bash
+"$WARP" control pane wait-for-text --pane 1990 --since now --timeout 30 "Ready"
+"$WARP" control pane wait-for-text --pane 1990 --mode screen --regex "claude.*>" --case-insensitive
+```
+
+For block waits, `--block-field output` is the default. That avoids false positives when a completion sentinel or target phrase appears in the submitted command itself. Use `--block-field command` only for command-submission checks, and `--block-field both` when either command text or output is intentionally acceptable.
 
 `pane read` prints the last N blocks, each formatted as:
 
@@ -199,8 +222,9 @@ echo "$URL"                                         # → https://app.warp.dev/s
 | `pane send` returns `pane cannot execute commands while another command is already running` or `shell bootstrapping is still in progress` | The pane is not executable right now. PR #16 fixed the old silent false-`Ok` for most of these cases. | Wait for the pane to become idle/bootstrapped, then retry. For interactive programs, use `pane write` + `pane keystroke`. |
 | Immediate back-to-back no-wait `pane send` calls both return `ok`, but the second command fuses into the first output/prompt | Remaining race before Warp marks the first command as running. | Use `--wait` for sequencing. For no-wait commands, wait briefly or poll `pane read`/`pane screen` before sending another shell command. |
 | Fresh `tab new` followed immediately by `pane send --wait` returns a bootstrapping error but the command later runs anyway | Known side-effect-on-error path: the command can be left pending during shell startup. | After `tab new`, wait a couple seconds and re-run `pane list`/`pane read` before the first `pane send`. |
+| `pane wait-for-text` times out | The requested text/regex did not appear in the selected search surface before `--timeout`. | Re-check the target pane id and `--mode`; use `--json` to inspect the final snapshot returned with the timeout. |
 | `pane share` prints `pending`, then `pane share-link` says the pane is not sharing | Async share setup failed after the CLI returned. Today the CLI does not surface the backend reason. | Check the Warp UI/logs for quota/auth/network errors; retry after fixing the account/plan issue. |
-| `--output-format json` / `WARP_OUTPUT_FORMAT=json` still prints pretty tables | Output-format plumbing is accepted but not wired for control responses yet. | Don't build scripts on JSON output until this is fixed; parse the stable table text or use a lower-level client. |
+| `--output-format json` / `WARP_OUTPUT_FORMAT=json` still prints pretty tables | Global output-format plumbing is accepted but not wired for most control responses yet. | Use explicit JSON-capable commands: `pane snapshot --json` and `pane wait-for-text --json`. |
 
 ## Don't
 

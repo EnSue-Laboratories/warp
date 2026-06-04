@@ -20,6 +20,7 @@ There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that docume
 | `pane list [--tab <id>]` / `pane send [--pane <id>] [--wait] [--timeout <secs>] <cmd…>` / `pane read [--pane <id>] [--blocks N]` | ✅ |
 | `pane write [--pane <id>] "<text>"` / `pane keystroke [--pane <id>] <key>` | ✅ |
 | `pane screen [--pane <id>]` (capture the live screen grid, incl. TUI/alt-screen) | ✅ |
+| `pane snapshot [--pane <id>] [--blocks N] [--no-screen] [--json]` / `pane wait-for-text [--pane <id>] [--mode screen\|blocks\|both] [--block-field output\|command\|both] [--since all\|now] [--regex] [--timeout <secs>] <text>` | ✅ |
 | `pane focus <id>` / `pane close <id>` / `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
 | `pane share [--pane <id>] [--scrollback none\|all]` / `pane share-link [--pane <id>]` / `pane unshare [--pane <id>]` | ✅ |
 | `block list [--pane <id>] [--limit N]` / `block read <id>` | ✅ |
@@ -38,6 +39,8 @@ The CLI reports `active` for the focused tab and `focused` for the focused pane 
 
 `keystroke` accepts named keys (`enter` `tab` `esc` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `delete` `ins` `backspace` `space` `f1`–`f12`) and `ctrl-<char>` chords. See `keystroke_to_bytes` in `app/src/control_server/mod.rs`.
 
+**Agent-readable pane state.** `pane snapshot --json` returns a versioned JSON object with pane metadata, the current screen text, recent blocks, capture timestamp, and truncation flags. `pane wait-for-text` polls the live screen and/or recent block output until literal text or a regex appears; use `--since now` when waiting for newly-emitted prompts/output, `--block-field command|both` only when command text should count as a match, and `--json` when a caller needs the match plus the final snapshot.
+
 ### Architecture (where the code lives)
 
 - **Wire protocol** — `app/src/control_server/wire.rs`: `Request` / `Response` enums with `serde(tag = "kind", rename_all = "snake_case")`. Block ids are `String` (matches Warp's `BlockId(String)`); tab/pane ids are `u64` (`EntityId` as a number).
@@ -53,7 +56,7 @@ The CLI reports `active` for the focused tab and `focused` for the focused pane 
 - **No-wait `pane send` still has narrow timing races.** Immediate back-to-back no-wait sends can slip in before Warp marks the first command as running, returning `ok` while the second command fuses into the first command's prompt/output. A fresh `tab new` followed immediately by `pane send` can also return a bootstrapping error while leaving the command pending, so it executes later anyway. Agents should use `--wait` for shell-command sequencing, or explicitly poll `pane read`/`pane screen` between no-wait submissions, especially after creating tabs.
 - **`pane send` pane id is a `--pane` FLAG, not positional.** `SendInputArgs.pane` is `#[arg(long)]` and `command` is `trailing_var_arg`, so `pane send 1990 "cmd"` folds `1990` into the command (runs `1990 cmd`) and defaults `--pane` to the focused pane — silently wrong target + garbage command. Always `pane send --pane <id> …`.
 - **`pane share` is async and may fail after the CLI returns `pending`.** `pane share-link` is the source of truth for the watch URL. If setup fails later (for example quota/plan/auth/network errors), the current CLI may only report that the pane is not sharing; the detailed reason can appear in the Warp UI/logs.
-- **Control output-format flags are not wired yet.** `--output-format json` and `WARP_OUTPUT_FORMAT=json` are accepted by the global CLI but current control pretty-printers ignore them, so list/read responses still print tables/text. Do not write JSON-dependent automation against these commands until `app/src/cli_control/mod.rs` is updated.
+- **Global control output-format flags are still incomplete.** `--output-format json` and `WARP_OUTPUT_FORMAT=json` are accepted by the global CLI but most control pretty-printers still ignore them, so list/read responses print tables/text. Use the explicit `pane snapshot --json` and `pane wait-for-text --json` flags for structured agent automation.
 - **Active-tab dispatch.** `NewTab` / `CloseTab` call `Workspace::handle_action(&WorkspaceAction::…, ctx)` directly. Earlier attempts used `dispatch_typed_action` and silently no-op'd ("no view handled it") because the singleton-model background task isn't in any focus chain.
 - **`pane split`** uses the same pattern: locate the owning `PaneGroup` view and call `handle_action(&PaneGroupAction::Add(Direction::…), ctx)`. That's the same code path keybindings use, so splits inherit shell-selection / focus behavior.
 - **exFAT codesign trap (build).** When the `target/` directory is a symlink to an external exFAT drive, `codesign` chokes on AppleDouble `._*` files. Workaround: copy the bundled `.app` to APFS, then `codesign --force --deep` there. See "macOS local-build gotchas" below.

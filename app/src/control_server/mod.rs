@@ -12,11 +12,14 @@
 pub mod framing;
 pub mod wire;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use chrono::{SecondsFormat, Utc};
 use futures::io::{BufReader, BufWriter};
 use futures::AsyncReadExt as _;
+use regex::RegexBuilder;
 use warpui::r#async::Timer;
 use warpui::{AppContext, Entity, EntityId, SingletonEntity, ViewHandle};
 
@@ -24,8 +27,8 @@ use crate::terminal::input::{CommandExecutionResult, DenyExecutionReason};
 use crate::terminal::view::TerminalView;
 use warpui::TypedActionView;
 
-use crate::pane_group::{PaneGroup, PaneGroupAction};
 use crate::pane_group::tree::Direction as PaneDirection;
+use crate::pane_group::{PaneGroup, PaneGroupAction};
 use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
 use crate::terminal::shared_session::{
     join_link, SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionSource,
@@ -34,10 +37,16 @@ use crate::user_config::WarpConfig;
 use crate::workspace::action::WorkspaceAction;
 use crate::workspace::registry::WorkspaceRegistry;
 use crate::workspace::view::Workspace;
-use wire::{BlockEntry, PaneSummary, Request, Response, ShareScrollback, SplitDir, TabSummary};
+use wire::{
+    BlockEntry, PaneScreenSnapshot, PaneSnapshot, PaneSnapshotPane, PaneSummary, Request, Response,
+    ShareScrollback, SplitDir, TabSummary, TextMatch, TextMatchSource, WaitForTextBlockField,
+    WaitForTextMode, WaitForTextSince,
+};
 
 const SEND_WAIT_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const SEND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const WAIT_TEXT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 /// Singleton model that owns the control socket task.
 pub struct ControlModel;
@@ -157,6 +166,34 @@ async fn dispatch_async(request: Request, spawner: warpui::ModelSpawner<ControlM
             wait: true,
             timeout_ms,
         } => handle_send_input_wait(pane, text, timeout_ms, spawner).await,
+        Request::WaitForText {
+            pane,
+            text,
+            regex,
+            timeout_ms,
+            mode,
+            case_insensitive,
+            since,
+            blocks,
+            block_field,
+            max_output_bytes,
+            json,
+        } => {
+            let options = WaitForTextOptions {
+                pane,
+                text,
+                regex,
+                timeout_ms,
+                mode,
+                case_insensitive,
+                since,
+                blocks,
+                block_field,
+                max_output_bytes,
+                json,
+            };
+            handle_wait_for_text(options, spawner).await
+        }
         request => dispatch_on_main(request, spawner).await,
     }
 }
@@ -186,6 +223,16 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         } => handle_send_input(pane, text, ctx),
         Request::ReadPane { pane, blocks } => handle_read_pane(pane, blocks, ctx),
         Request::ReadScreen { pane } => handle_read_screen(pane, ctx),
+        Request::SnapshotPane {
+            pane,
+            blocks,
+            include_screen,
+            max_output_bytes,
+            json,
+        } => handle_snapshot_pane(pane, blocks, include_screen, max_output_bytes, json, ctx),
+        Request::WaitForText { .. } => Response::Error {
+            message: "control_server: wait-for-text must dispatch asynchronously".into(),
+        },
         Request::SharePane { pane, scrollback } => handle_share_pane(pane, scrollback, ctx),
         Request::SharePaneLink { pane } => handle_share_pane_link(pane, ctx),
         Request::UnsharePane { pane } => handle_unshare_pane(pane, ctx),
@@ -322,10 +369,7 @@ fn handle_list_tabs(ctx: &mut AppContext) -> Response {
 /// `PaneGroup::terminal_pane_ids` still returns panes that are hidden for
 /// close (the undo-close machinery keeps them in `pane_contents`).
 /// Filter those out so list responses match what the user sees.
-fn visible_terminal_views(
-    pg: &PaneGroup,
-    ctx: &AppContext,
-) -> Vec<ViewHandle<TerminalView>> {
+fn visible_terminal_views(pg: &PaneGroup, ctx: &AppContext) -> Vec<ViewHandle<TerminalView>> {
     pg.terminal_pane_ids()
         .filter(|pid| !pg.is_pane_hidden_for_close(*pid))
         .filter_map(|pid| pg.terminal_view_from_pane_id(pid, ctx))
@@ -584,6 +628,407 @@ fn handle_read_screen(pane: Option<u64>, ctx: &mut AppContext) -> Response {
     }
 }
 
+fn handle_snapshot_pane(
+    pane: Option<u64>,
+    blocks: usize,
+    include_screen: bool,
+    max_output_bytes: usize,
+    json: bool,
+    ctx: &mut AppContext,
+) -> Response {
+    match collect_pane_snapshot(pane, blocks, include_screen, max_output_bytes, ctx) {
+        Ok(snapshot) => Response::PaneSnapshot { snapshot, json },
+        Err(response) => response,
+    }
+}
+
+fn collect_pane_snapshot(
+    pane: Option<u64>,
+    blocks: usize,
+    include_screen: bool,
+    max_output_bytes: usize,
+    ctx: &mut AppContext,
+) -> Result<PaneSnapshot, Response> {
+    let (pane_wire, view_handle) = resolve_terminal_view(pane, ctx)?;
+    let pane = pane_snapshot_summary(pane_wire, ctx).unwrap_or_else(|| {
+        let cwd = view_handle.as_ref(ctx).pwd();
+        PaneSnapshotPane {
+            id: pane_wire,
+            tab_id: 0,
+            tab_index: 0,
+            title: None,
+            cwd,
+            focused: false,
+        }
+    });
+
+    let (screen, blocks) = view_handle.update(ctx, |view, _ctx| {
+        let model = view.model.lock();
+        let screen = if include_screen {
+            let (alt_screen, text) = model.screen_to_string();
+            let (text, text_truncated) = truncate_text(text, max_output_bytes);
+            Some(PaneScreenSnapshot {
+                alt_screen,
+                text,
+                text_truncated,
+            })
+        } else {
+            None
+        };
+
+        let block_list = model.block_list();
+        let all = block_list.blocks();
+        let take = blocks.min(all.len());
+        let start = all.len().saturating_sub(take);
+        let blocks = all[start..]
+            .iter()
+            .map(|b| {
+                let mut entry = block_to_entry(b, pane_wire);
+                let (output, output_truncated) = truncate_text(entry.output, max_output_bytes);
+                entry.output = output;
+                entry.output_truncated = output_truncated;
+                entry
+            })
+            .collect::<Vec<_>>();
+
+        (screen, blocks)
+    });
+
+    Ok(PaneSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
+        captured_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        pane,
+        screen,
+        blocks,
+    })
+}
+
+fn pane_snapshot_summary(pane_wire: u64, ctx: &AppContext) -> Option<PaneSnapshotPane> {
+    let workspace = active_workspace(ctx)?;
+    let ws = workspace.as_ref(ctx);
+    let active_idx = ws.active_tab_index();
+    for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+        let tab_id = entity_id_to_u64(tab.pane_group.id());
+        let pg = tab.pane_group.as_ref(ctx);
+        let focused_pid = pg.focused_pane_id(ctx);
+        let focused_view_id = pg
+            .terminal_view_from_pane_id(focused_pid, ctx)
+            .map(|v| entity_id_to_u64(v.id()));
+        for view in visible_terminal_views(pg, ctx) {
+            let wire_id = entity_id_to_u64(view.id());
+            if wire_id == pane_wire {
+                return Some(PaneSnapshotPane {
+                    id: wire_id,
+                    tab_id,
+                    tab_index: tab_idx,
+                    title: None,
+                    cwd: view.as_ref(ctx).pwd(),
+                    focused: tab_idx == active_idx && focused_view_id == Some(wire_id),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn truncate_text(text: String, max_bytes: usize) -> (String, bool) {
+    if max_bytes == 0 || text.len() <= max_bytes {
+        return (text, false);
+    }
+
+    let mut start = text.len().saturating_sub(max_bytes);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    (text[start..].to_string(), true)
+}
+
+struct WaitForTextOptions {
+    pane: Option<u64>,
+    text: String,
+    regex: bool,
+    timeout_ms: u64,
+    mode: WaitForTextMode,
+    case_insensitive: bool,
+    since: WaitForTextSince,
+    blocks: usize,
+    block_field: WaitForTextBlockField,
+    max_output_bytes: usize,
+    json: bool,
+}
+
+#[derive(Default)]
+struct WaitForTextBaseline {
+    screen_text: Option<String>,
+    block_text_by_id: HashMap<String, String>,
+}
+
+async fn handle_wait_for_text(
+    options: WaitForTextOptions,
+    spawner: warpui::ModelSpawner<ControlModel>,
+) -> Response {
+    if options.text.is_empty() {
+        return Response::Error {
+            message: "text must not be empty".into(),
+        };
+    }
+
+    if options.regex {
+        if let Err(err) = RegexBuilder::new(&options.text)
+            .case_insensitive(options.case_insensitive)
+            .build()
+        {
+            return Response::Error {
+                message: format!("invalid regex: {err}"),
+            };
+        }
+    }
+
+    let timeout = Duration::from_millis(options.timeout_ms);
+    let started = Instant::now();
+    let include_screen = options.mode.includes_screen();
+    let blocks = if options.mode.includes_blocks() {
+        options.blocks
+    } else {
+        0
+    };
+
+    let baseline = if options.since == WaitForTextSince::Now {
+        let pane = options.pane;
+        match dispatch_snapshot_for_wait(pane, blocks, include_screen, usize::MAX, &spawner).await {
+            Ok(snapshot) => WaitForTextBaseline::from_snapshot(&snapshot, options.block_field),
+            Err(response) => return response,
+        }
+    } else {
+        WaitForTextBaseline::default()
+    };
+
+    loop {
+        let pane = options.pane;
+        let snapshot =
+            match dispatch_snapshot_for_wait(pane, blocks, include_screen, usize::MAX, &spawner)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(response) => return response,
+            };
+
+        if let Some(matched) = find_text_match(&snapshot, &options, &baseline) {
+            let elapsed_ms = elapsed_ms(started);
+            let snapshot = options
+                .json
+                .then(|| truncate_snapshot(snapshot, options.max_output_bytes));
+            return Response::WaitForTextMatched {
+                pane: matched.pane_id,
+                elapsed_ms,
+                matched,
+                snapshot,
+                json: options.json,
+            };
+        }
+
+        if started.elapsed() >= timeout {
+            let pane = snapshot.pane.id;
+            let snapshot = options
+                .json
+                .then(|| truncate_snapshot(snapshot, options.max_output_bytes));
+            return Response::WaitForTextTimedOut {
+                pane,
+                timeout_ms: options.timeout_ms,
+                elapsed_ms: elapsed_ms(started),
+                snapshot,
+                json: options.json,
+            };
+        }
+
+        let remaining = timeout.saturating_sub(started.elapsed());
+        Timer::after(remaining.min(WAIT_TEXT_POLL_INTERVAL)).await;
+    }
+}
+
+async fn dispatch_snapshot_for_wait(
+    pane: Option<u64>,
+    blocks: usize,
+    include_screen: bool,
+    max_output_bytes: usize,
+    spawner: &warpui::ModelSpawner<ControlModel>,
+) -> Result<PaneSnapshot, Response> {
+    spawner
+        .spawn(move |_me, ctx| {
+            collect_pane_snapshot(pane, blocks, include_screen, max_output_bytes, ctx)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(Response::Error {
+                message: "control_server: dispatch dropped (model gone)".into(),
+            })
+        })
+}
+
+impl WaitForTextBaseline {
+    fn from_snapshot(snapshot: &PaneSnapshot, block_field: WaitForTextBlockField) -> Self {
+        Self {
+            screen_text: snapshot.screen.as_ref().map(|screen| screen.text.clone()),
+            block_text_by_id: snapshot
+                .blocks
+                .iter()
+                .map(|block| (block.id.clone(), block_search_text(block, block_field)))
+                .collect(),
+        }
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn truncate_snapshot(mut snapshot: PaneSnapshot, max_output_bytes: usize) -> PaneSnapshot {
+    if let Some(screen) = &mut snapshot.screen {
+        let (text, text_truncated) =
+            truncate_text(std::mem::take(&mut screen.text), max_output_bytes);
+        screen.text = text;
+        screen.text_truncated = text_truncated;
+    }
+
+    for block in &mut snapshot.blocks {
+        let (output, output_truncated) =
+            truncate_text(std::mem::take(&mut block.output), max_output_bytes);
+        block.output = output;
+        block.output_truncated = output_truncated;
+    }
+
+    snapshot
+}
+
+fn find_text_match(
+    snapshot: &PaneSnapshot,
+    options: &WaitForTextOptions,
+    baseline: &WaitForTextBaseline,
+) -> Option<TextMatch> {
+    if options.mode.includes_screen() {
+        if let Some(screen) = &snapshot.screen {
+            let haystack =
+                text_after_baseline(&screen.text, baseline.screen_text.as_deref(), options.since);
+            if let Some((text, line)) = find_in_text(
+                haystack,
+                &options.text,
+                options.regex,
+                options.case_insensitive,
+            ) {
+                return Some(TextMatch {
+                    source: TextMatchSource::Screen,
+                    pane_id: snapshot.pane.id,
+                    block_id: None,
+                    text,
+                    line,
+                });
+            }
+        }
+    }
+
+    if options.mode.includes_blocks() {
+        for block in snapshot.blocks.iter().rev() {
+            let text = block_search_text(block, options.block_field);
+            let haystack = text_after_baseline(
+                &text,
+                baseline.block_text_by_id.get(&block.id).map(String::as_str),
+                options.since,
+            );
+            if let Some((text, line)) = find_in_text(
+                haystack,
+                &options.text,
+                options.regex,
+                options.case_insensitive,
+            ) {
+                return Some(TextMatch {
+                    source: TextMatchSource::Block,
+                    pane_id: snapshot.pane.id,
+                    block_id: Some(block.id.clone()),
+                    text,
+                    line,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn block_search_text(block: &BlockEntry, field: WaitForTextBlockField) -> String {
+    match field {
+        WaitForTextBlockField::Output => block.output.clone(),
+        WaitForTextBlockField::Command => block.command.clone().unwrap_or_default(),
+        WaitForTextBlockField::Both => match &block.command {
+            Some(command) if !block.output.is_empty() => {
+                format!("{command}\n{}", block.output)
+            }
+            Some(command) => command.clone(),
+            None => block.output.clone(),
+        },
+    }
+}
+
+fn text_after_baseline<'a>(
+    text: &'a str,
+    baseline: Option<&str>,
+    since: WaitForTextSince,
+) -> &'a str {
+    if since == WaitForTextSince::Now {
+        if let Some(baseline) = baseline {
+            if let Some(rest) = text.strip_prefix(baseline) {
+                return rest;
+            }
+        }
+    }
+    text
+}
+
+fn find_in_text(
+    haystack: &str,
+    needle: &str,
+    regex: bool,
+    case_insensitive: bool,
+) -> Option<(String, Option<String>)> {
+    if regex {
+        let re = RegexBuilder::new(needle)
+            .case_insensitive(case_insensitive)
+            .build()
+            .ok()?;
+        let found = re.find(haystack)?;
+        let matched = found.as_str().to_string();
+        let line = line_containing(haystack, found.start(), found.end());
+        return Some((matched, line));
+    }
+
+    if case_insensitive {
+        let re = RegexBuilder::new(&regex::escape(needle))
+            .case_insensitive(true)
+            .build()
+            .ok()?;
+        let found = re.find(haystack)?;
+        let matched = found.as_str().to_string();
+        let line = line_containing(haystack, found.start(), found.end());
+        Some((matched, line))
+    } else {
+        let start = haystack.find(needle)?;
+        let end = start + needle.len();
+        let line = line_containing(haystack, start, end);
+        Some((needle.to_string(), line))
+    }
+}
+
+fn line_containing(text: &str, start: usize, end: usize) -> Option<String> {
+    let line_start = text[..start].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+    let line_end = text[end..]
+        .find('\n')
+        .map(|idx| end + idx)
+        .unwrap_or(text.len());
+    text.get(line_start..line_end)
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn handle_share_pane(
     pane: Option<u64>,
     scrollback: ShareScrollback,
@@ -669,9 +1114,7 @@ fn handle_unshare_pane(pane: Option<u64>, ctx: &mut AppContext) -> Response {
 }
 
 fn block_to_entry(b: &crate::terminal::model::block::Block, pane_wire: u64) -> BlockEntry {
-    let command = b
-        .prompt_and_command_grid()
-        .contents_to_string(false, None);
+    let command = b.prompt_and_command_grid().contents_to_string(false, None);
     let command = if command.trim().is_empty() {
         None
     } else {
@@ -683,6 +1126,7 @@ fn block_to_entry(b: &crate::terminal::model::block::Block, pane_wire: u64) -> B
         pane_id: pane_wire,
         command,
         output,
+        output_truncated: false,
         exit_code: b.is_done().then(|| b.exit_code().value()),
         pwd: b.pwd().cloned(),
         started_at: b.start_ts().map(|ts| ts.to_rfc3339()),
@@ -718,11 +1162,7 @@ fn handle_list_blocks(pane: Option<u64>, limit: usize, ctx: &mut AppContext) -> 
     Response::Blocks { blocks: entries }
 }
 
-fn handle_split_pane(
-    pane: Option<u64>,
-    direction: SplitDir,
-    ctx: &mut AppContext,
-) -> Response {
+fn handle_split_pane(pane: Option<u64>, direction: SplitDir, ctx: &mut AppContext) -> Response {
     let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
         Some(p) => p,
         None => {
@@ -836,7 +1276,10 @@ fn handle_close_pane(pane: u64, ctx: &mut AppContext) -> Response {
         };
     };
     let ws = workspace.as_ref(ctx);
-    let mut found: Option<(warpui::ViewHandle<PaneGroup>, crate::pane_group::pane::PaneId)> = None;
+    let mut found: Option<(
+        warpui::ViewHandle<PaneGroup>,
+        crate::pane_group::pane::PaneId,
+    )> = None;
     for tab in ws.tabs.iter() {
         let pg = tab.pane_group.as_ref(ctx);
         for pid in pg.terminal_pane_ids() {
@@ -1001,7 +1444,10 @@ fn keystroke_to_bytes(key: &str) -> Option<Vec<u8>> {
         "f11" => b"\x1b[23~",
         "f12" => b"\x1b[24~",
         _ => {
-            if let Some(rest) = lower.strip_prefix("ctrl-").or_else(|| lower.strip_prefix("c-")) {
+            if let Some(rest) = lower
+                .strip_prefix("ctrl-")
+                .or_else(|| lower.strip_prefix("c-"))
+            {
                 if rest.len() == 1 {
                     let c = rest.as_bytes()[0];
                     // ctrl-<letter> is the ASCII control char (0x01..=0x1A).
@@ -1101,3 +1547,7 @@ fn handle_close_tab(tab: u64, ctx: &mut AppContext) -> Response {
     });
     Response::Ok
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
