@@ -8,9 +8,10 @@ use std::io::{BufReader, BufWriter};
 use anyhow::{anyhow, Context, Result};
 use warp_cli::control::{
     BlockCommand, BlockIdArg, BlockListArgs, ControlCommand, KeystrokeArgs, PaneCommand, PaneIdArg,
-    PaneListArgs, PaneReadArgs, PaneScreenArgs, PaneShareArgs, PaneTargetArgs, SendInputArgs,
-    ShareScrollback as CliShareScrollback, SplitArgs, SplitDirection, TabCommand, TabIdArg,
-    WriteBytesArgs,
+    PaneListArgs, PaneReadArgs, PaneScreenArgs, PaneShareArgs, PaneSnapshotArgs, PaneTargetArgs,
+    SendInputArgs, ShareScrollback as CliShareScrollback, SplitArgs, SplitDirection, TabCommand,
+    TabIdArg, WaitForTextArgs, WaitForTextMode as CliWaitForTextMode,
+    WaitForTextSince as CliWaitForTextSince, WriteBytesArgs,
 };
 use warp_cli::GlobalOptions;
 use warpui::AppContext;
@@ -18,7 +19,8 @@ use warpui::AppContext;
 use crate::control_server::framing::{read_frame_sync, write_frame_sync};
 use crate::control_server::socket_path;
 use crate::control_server::wire::{
-    BlockEntry, PaneSummary, Request, Response, ShareScrollback, SplitDir, TabSummary,
+    BlockEntry, PaneSnapshot, PaneSummary, Request, Response, ShareScrollback, SplitDir,
+    TabSummary, TextMatch, TextMatchSource, WaitForTextMode, WaitForTextSince,
 };
 
 /// Dispatch `warp control …` from the full CLI plumbing (after AppContext
@@ -105,6 +107,55 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
                 Some(s) => Some(parse_u64(&s, "pane")?),
                 None => None,
             },
+        },
+        ControlCommand::Pane(PaneCommand::Snapshot(PaneSnapshotArgs {
+            pane,
+            blocks,
+            no_screen,
+            max_output_bytes,
+            json,
+        })) => Request::SnapshotPane {
+            pane: match pane {
+                Some(s) => Some(parse_u64(&s, "pane")?),
+                None => None,
+            },
+            blocks,
+            include_screen: !no_screen,
+            max_output_bytes,
+            json,
+        },
+        ControlCommand::Pane(PaneCommand::WaitForText(WaitForTextArgs {
+            pane,
+            regex,
+            timeout,
+            mode,
+            case_insensitive,
+            since,
+            blocks,
+            max_output_bytes,
+            json,
+            text,
+        })) => Request::WaitForText {
+            pane: match pane {
+                Some(s) => Some(parse_u64(&s, "pane")?),
+                None => None,
+            },
+            text,
+            regex,
+            timeout_ms: timeout.saturating_mul(1000),
+            mode: match mode {
+                CliWaitForTextMode::Screen => WaitForTextMode::Screen,
+                CliWaitForTextMode::Blocks => WaitForTextMode::Blocks,
+                CliWaitForTextMode::Both => WaitForTextMode::Both,
+            },
+            case_insensitive,
+            since: match since {
+                CliWaitForTextSince::All => WaitForTextSince::All,
+                CliWaitForTextSince::Now => WaitForTextSince::Now,
+            },
+            blocks,
+            max_output_bytes,
+            json,
         },
         ControlCommand::Pane(PaneCommand::Share(PaneShareArgs { pane, scrollback })) => {
             Request::SharePane {
@@ -206,6 +257,58 @@ fn print_response(response: Response) -> Result<()> {
             let mode = if alt_screen { "alt-screen" } else { "primary" };
             println!("# pane {pane} screen ({mode}):");
             println!("{}", text.trim_end());
+        }
+        Response::PaneSnapshot { snapshot, json } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            } else {
+                print_snapshot(&snapshot);
+            }
+        }
+        Response::WaitForTextMatched {
+            pane: _,
+            elapsed_ms,
+            matched,
+            snapshot,
+            json,
+        } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "matched": true,
+                        "elapsed_ms": elapsed_ms,
+                        "match": matched,
+                        "snapshot": snapshot,
+                    }))?
+                );
+            } else {
+                print_text_match(&matched, elapsed_ms);
+            }
+        }
+        Response::WaitForTextTimedOut {
+            pane,
+            timeout_ms,
+            elapsed_ms,
+            snapshot,
+            json,
+        } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "matched": false,
+                        "pane": pane,
+                        "timeout_ms": timeout_ms,
+                        "elapsed_ms": elapsed_ms,
+                        "snapshot": snapshot,
+                    }))?
+                );
+            }
+            return Err(anyhow!(
+                "text did not appear in pane {pane} after {}",
+                format_duration_ms(timeout_ms)
+            ));
         }
         Response::ShareStarted { pane } => {
             println!("sharing started for pane {pane} (pending)");
@@ -330,5 +433,56 @@ fn print_one_block(b: &BlockEntry) {
     }
     if let Some(code) = b.exit_code {
         println!("(exit {code})");
+    }
+}
+
+fn print_snapshot(snapshot: &PaneSnapshot) {
+    println!(
+        "# pane {} snapshot (tab {}, focused: {})",
+        snapshot.pane.id, snapshot.pane.tab_id, snapshot.pane.focused
+    );
+    if let Some(cwd) = &snapshot.pane.cwd {
+        println!("cwd: {cwd}");
+    }
+    if let Some(screen) = &snapshot.screen {
+        let mode = if screen.alt_screen {
+            "alt-screen"
+        } else {
+            "primary"
+        };
+        println!("--- screen ({mode}) ---");
+        println!("{}", screen.text.trim_end());
+        if screen.text_truncated {
+            println!("(screen text truncated)");
+        }
+    }
+    if !snapshot.blocks.is_empty() {
+        println!("--- recent blocks ---");
+        for block in &snapshot.blocks {
+            print_one_block(block);
+            if block.output_truncated {
+                println!("(output truncated)");
+            }
+        }
+    }
+}
+
+fn print_text_match(matched: &TextMatch, elapsed_ms: u64) {
+    let source = match matched.source {
+        TextMatchSource::Screen => "screen".to_string(),
+        TextMatchSource::Block => match &matched.block_id {
+            Some(id) => format!("block {id}"),
+            None => "block".to_string(),
+        },
+    };
+    println!(
+        "matched in pane {} {source} after {}",
+        matched.pane_id,
+        format_duration_ms(elapsed_ms)
+    );
+    if let Some(line) = &matched.line {
+        println!("{line}");
+    } else {
+        println!("{}", matched.text);
     }
 }

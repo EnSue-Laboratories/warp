@@ -1734,6 +1734,8 @@ fn control_telemetry_action(
         ControlCommand::Pane(PaneCommand::Keystroke(_)) => "pane.keystroke",
         ControlCommand::Pane(PaneCommand::Read(_)) => "pane.read",
         ControlCommand::Pane(PaneCommand::Screen(_)) => "pane.screen",
+        ControlCommand::Pane(PaneCommand::Snapshot(_)) => "pane.snapshot",
+        ControlCommand::Pane(PaneCommand::WaitForText(_)) => "pane.wait_for_text",
         ControlCommand::Pane(PaneCommand::Share(_)) => "pane.share",
         ControlCommand::Pane(PaneCommand::ShareLink(_)) => "pane.share_link",
         ControlCommand::Pane(PaneCommand::Unshare(_)) => "pane.unshare",
