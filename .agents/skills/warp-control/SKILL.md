@@ -52,10 +52,10 @@ warp-oss control pane  list      [--tab <id>]
 warp-oss control pane  send      [--pane <id>] [--wait] [--timeout <secs>] "<command>"  # block exec; pane is a --FLAG
 warp-oss control pane  write     [--pane <id>] "<text>"       # raw bytes to PTY, no \n
 warp-oss control pane  keystroke [--pane <id>] <key>          # named key / ctrl-<char>
-warp-oss control pane  read      [--pane <id>] [--blocks N]   # default N=10
-warp-oss control pane  screen    [--pane <id>]                # live screen grid
-warp-oss control pane  snapshot  [--pane <id>] [--blocks N] [--no-screen] [--json]
-warp-oss control pane  wait-for-text [--pane <id>] [--mode screen|blocks|both] [--block-field output|command|both] [--since all|now] [--regex] [--timeout <secs>] [--json] "<text>"
+warp-oss control pane  read      [--pane <id>] [--blocks N]   # default N=10; command blocks only
+warp-oss control pane  screen    [--pane <id>]                # live screen grid — sees inside TUIs (vim/less/tmux)
+warp-oss control pane  snapshot  [--pane <id>] [--blocks N]   # screen text + last N blocks in one structured capture (default N=5)
+warp-oss control pane  wait-for-text [--pane <id>] <text>     # BLOCK until text/regex appears (see section below)
 warp-oss control pane  focus     <id>                         # also activates the owning tab
 warp-oss control pane  close     <id>
 warp-oss control pane  split     [--pane <id>] --direction <left|right|up|down>
@@ -67,6 +67,46 @@ warp-oss control pane  unshare    [--pane <id>]               # stop sharing
 warp-oss control block list [--pane <id>] [--limit N]
 warp-oss control block read  <id>                             # id from `block list`
 ```
+
+**Global flags** (go *before* the subcommand, e.g. `warp-oss control --debug tab list`):
+
+- `--api-key <KEY>` / env `WARP_API_KEY` — authenticate to the control socket when the server requires it.
+- `--output-format <json|ndjson|pretty|text>` / env `WARP_OUTPUT_FORMAT` — default `pretty`. ⚠️ Still **not wired** for most control responses: `json` currently prints the pretty table anyway, so don't build parsers on it yet (parse the stable table text instead).
+- `--debug` — enable debug logging.
+
+> Note: `warp-oss control --help` works on the installed `/Applications` binary but **hangs on the stale ThinkPlus debug build** — another reason to default to the Applications path above.
+
+### Awaiting output — `wait-for-text` (prefer this over sleep-loops)
+
+`pane wait-for-text <TEXT>` blocks until the text appears, instead of the `sleep N; pane read; check; repeat` dance. This is the right primitive for "run a command, wait for it to finish / for a prompt / for a marker, then continue".
+
+```
+warp-oss control pane wait-for-text [--pane <id>] <TEXT> [flags]
+  --regex                      treat <TEXT> as a regular expression
+  --timeout <SECONDS>          max wait before it returns a timeout error (always set this)
+  --mode <screen|blocks|both>  where to search — live screen grid, recent command blocks, or both
+  --case-insensitive
+  --since <…>                  only consider output after this point
+  --blocks <N>                 how many recent blocks to search when block-matching
+  --block-field <…>            which part of a block to search
+  --json                       structured match/timeout result (use this to branch in scripts)
+```
+
+Pattern — run something slow and await a completion marker rather than guessing a sleep:
+```bash
+"$WARP" control pane send --pane 1990 "pytest -q; echo __DONE__$?"
+"$WARP" control pane wait-for-text --pane 1990 --regex --timeout 600 '__DONE__[0-9]+'
+"$WARP" control pane read --pane 1990 --blocks 3      # now read the settled result
+```
+Waiting on an interactive prompt (TUI) — search the live screen:
+```bash
+"$WARP" control pane wait-for-text --pane 1990 --mode screen --timeout 30 "Password:"
+"$WARP" control pane write --pane 1990 "$PW"; "$WARP" control pane keystroke --pane 1990 enter
+```
+
+### One-shot state grab — `snapshot`
+
+`pane snapshot [--pane <id>] [--blocks N]` returns the live screen text **plus** the last N command blocks (default 5) in a single structured capture — handy when you want both "what's on screen now" and "what just ran" without separate `screen` + `read` calls.
 
 ### `send` vs `write` vs `keystroke` — when to use which
 
@@ -99,18 +139,19 @@ WARP=… ; P=2794
 cat /tmp/scratch.txt   # → hello
 ```
 
-Where the binary lives (use the Applications bundle by default):
+Where the binary lives (use the installed Applications bundle by default):
 
-- `/Applications/WarpOss.app/Contents/Resources/bin/warp-oss` ← **preferred shell wrapper**
-- `/Applications/WarpOss.app/Contents/MacOS/warp-oss` ← canonical app binary
-- `/Volumes/ThinkPlus/warp-target/debug/warp-oss` (fresh local build — only when testing an unreleased build)
+- `/Applications/WarpOss.app/Contents/MacOS/warp-oss` ← **preferred — the installed app binary that serves the live control socket**
+- `/Volumes/ThinkPlus/warp-target/debug/warp-oss` ← stale local debug build — **AVOID**: it's usually behind the running app and its `control --help` *hangs* (never returns). Only touch it when you deliberately want to test a build you just compiled there.
 
-The `warp` shell alias points at the same binary. The `control` command is just a *client* of the running Warp GUI (the server) over the shared socket, so which binary you invoke doesn't change behavior — default to the `/Applications` one.
+> ⚠️ The old `…/Contents/Resources/bin/warp-oss` wrapper **no longer exists** in current builds — don't reference it. To be sure which binary is actually serving the socket, run `ps axo pid,lstart,command | grep WarpOss.app` and use that path.
+
+The `warp` shell alias may still point at an old debug path, so prefer the explicit `/Applications/WarpOss.app/Contents/MacOS/warp-oss`. The `control` command is just a *client* of the running Warp GUI (the server) over the shared socket.
 
 ## Standard workflow
 
 ```bash
-WARP=/Applications/WarpOss.app/Contents/Resources/bin/warp-oss   # canonical install wrapper
+WARP=/Applications/WarpOss.app/Contents/MacOS/warp-oss   # installed app binary (serves the socket)
 
 # 1) Survey state — identify which tab/pane you want to talk to.
 "$WARP" control tab list
