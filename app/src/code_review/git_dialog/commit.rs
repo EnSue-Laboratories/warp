@@ -18,7 +18,7 @@ use crate::ai::generate_code_review_content::api::{GenerateCodeReviewContentRequ
 use crate::code_review::git_dialog::pr::{create_pr_with_ai_content, show_pr_created_toast};
 use crate::code_review::git_dialog::{
     interactive_path_future, render_branch_section, render_file_changes_box,
-    should_send_git_ops_ai_request, show_toast, user_facing_git_error, GitDialog, GitDialogAction,
+    should_send_git_ops_ai_request, show_git_error_toast, show_toast, GitDialog, GitDialogAction,
     GitDialogEvent, GitDialogMode,
 };
 use crate::code_review::telemetry_event::{
@@ -554,8 +554,9 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                     show_pr_created_toast(&pr, ctx);
                 }
                 Err(err) => {
-                    log::error!("Commit failed: {err}");
-                    show_toast(user_facing_git_error(&err.to_string()), ctx);
+                    let error = err.to_string();
+                    log::error!("Commit failed: {error}");
+                    show_git_error_toast(&error, ctx);
                 }
             }
             send_telemetry_from_ctx!(

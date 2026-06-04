@@ -6635,6 +6635,13 @@ impl CodeReviewView {
             .as_ref(ctx)
             .is_git_operation_blocked(ctx)
         {
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::error(
+                    "Cannot run git operations while a merge, rebase, or another git operation is in progress."
+                        .to_string(),
+                );
+                toast_stack.add_ephemeral_toast(toast, self.window_id, ctx);
+            });
             return;
         }
         let Some(repo_path) = self
@@ -6661,17 +6668,12 @@ impl CodeReviewView {
                     && !self.is_pr_info_refreshing(ctx)
                     && !diff_state.is_on_main_branch(ctx);
                 let has_upstream = diff_state.upstream_ref(ctx).is_some();
-                // If the user is in the uncommitted-changes view and has
-                // unchecked at least one file, narrow the commit to the
-                // checked paths only. Otherwise let the dialog keep its
-                // existing include-unstaged behavior.
+                // If the user is in the uncommitted-changes view, commit the
+                // checked paths only. Passing the full checked list even when
+                // every file is selected keeps the dialog in selection mode
+                // and avoids exposing the old include-unstaged toggle.
                 let diff_mode = diff_state.diff_mode(ctx);
-                let explicit_files = if matches!(diff_mode, DiffMode::Head)
-                    && self
-                        .active_repo
-                        .as_ref()
-                        .is_some_and(|repo| !repo.file_excluded.is_empty())
-                {
+                let explicit_files = if matches!(diff_mode, DiffMode::Head) {
                     Some(self.included_file_paths(ctx))
                 } else {
                     None

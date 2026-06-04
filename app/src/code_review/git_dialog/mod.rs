@@ -126,6 +126,17 @@ fn show_toast(msg: impl Into<String>, ctx: &mut ViewContext<GitDialog>) {
     });
 }
 
+/// Shows a git-operation failure with error styling and enough raw detail to
+/// make the failure actionable without opening logs.
+fn show_git_error_toast(raw: &str, ctx: &mut ViewContext<GitDialog>) {
+    let window_id = ctx.window_id();
+    let msg = user_facing_git_error(raw);
+    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+        let toast = DismissibleToast::error(msg);
+        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+    });
+}
+
 /// Whether the git-operations AI autogen flow should send an AI request.
 ///
 /// Folds the parent feature flag, the user's dedicated per-feature AI toggle
@@ -142,11 +153,11 @@ fn should_send_git_ops_ai_request(app: &AppContext) -> bool {
 }
 
 /// Maps a raw git error string to a user-friendly toast message. Known
-/// failure modes get dedicated copy; anything else falls back to a generic
-/// message (the raw error is always logged separately at the call site).
-fn user_facing_git_error(raw: &str) -> &'static str {
+/// failure modes get dedicated copy, and the compact raw failure is appended
+/// so unknown command output is visible to the user instead of only logs.
+fn user_facing_git_error(raw: &str) -> String {
     let lower = raw.to_lowercase();
-    if lower.contains("nothing to commit") {
+    let summary = if lower.contains("nothing to commit") {
         "No changes to commit."
     } else if lower.contains("please tell me who you are")
         || lower.contains("author identity unknown")
@@ -186,7 +197,29 @@ fn user_facing_git_error(raw: &str) -> &'static str {
         "GitHub CLI not authenticated. Run `gh auth login`."
     } else {
         "Git operation failed."
+    };
+    let detail = compact_git_error(raw);
+    if detail.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{summary} Details: {detail}")
     }
+}
+
+fn compact_git_error(raw: &str) -> String {
+    const MAX_DETAIL_CHARS: usize = 240;
+
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = compact
+        .trim()
+        .trim_matches(|c| matches!(c, ',' | ';'))
+        .trim();
+    let mut chars = compact.chars();
+    let mut truncated: String = chars.by_ref().take(MAX_DETAIL_CHARS).collect();
+    if chars.next().is_some() {
+        truncated.push_str("...");
+    }
+    truncated
 }
 
 // ── Shared rendering helpers ─────────────────────────────────────────
