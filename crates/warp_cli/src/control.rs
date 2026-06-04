@@ -160,6 +160,15 @@ pub struct SendInputArgs {
     #[arg(long)]
     pub pane: Option<String>,
 
+    /// Wait for the submitted command block to finish and print its output.
+    #[arg(long, short = 'w')]
+    pub wait: bool,
+
+    /// Maximum seconds to wait for completion. Defaults to 120 seconds when
+    /// `--wait` is set. The command keeps running if this timeout is reached.
+    #[arg(long, value_name = "SECS", requires = "wait")]
+    pub timeout: Option<u64>,
+
     /// The command text to send. Multiple args are joined with single spaces,
     /// so `pane send --pane <id> ls -la /tmp` works without shell quoting. The
     /// command is executed as a whole block (Warp's command-block model), so
@@ -245,3 +254,7 @@ pub struct BlockListArgs {
     #[arg(long, default_value_t = 50)]
     pub limit: usize,
 }
+
+#[cfg(test)]
+#[path = "control_tests.rs"]
+mod tests;

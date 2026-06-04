@@ -17,7 +17,7 @@ There is a dedicated skill at `.agents/skills/warp-control/SKILL.md` that docume
 | Subcommand | Status |
 |---|---|
 | `tab list` / `tab new [--config <name>]` / `tab close <id>` / `tab focus <id>` | ✅ |
-| `pane list [--tab <id>]` / `pane send [--pane <id>] <cmd…>` / `pane read [--pane <id>] [--blocks N]` | ✅ |
+| `pane list [--tab <id>]` / `pane send [--pane <id>] [--wait] [--timeout <secs>] <cmd…>` / `pane read [--pane <id>] [--blocks N]` | ✅ |
 | `pane write [--pane <id>] "<text>"` / `pane keystroke [--pane <id>] <key>` | ✅ |
 | `pane screen [--pane <id>]` (capture the live screen grid, incl. TUI/alt-screen) | ✅ |
 | `pane focus <id>` / `pane close <id>` / `pane split [--pane <id>] --direction <left\|right\|up\|down>` | ✅ |
@@ -33,7 +33,7 @@ The CLI reports `active` for the focused tab and `focused` for the focused pane 
 **Platform gating.** The control surface is `#[cfg(unix)]`. On Windows/WASM, `warp control …` returns a clear "only available on Unix targets" error. The Unix-only `std::os::unix::net::Unix*` types are never reached on non-Unix builds.
 
 **`send` vs `write` vs `keystroke`.** Three input paths, picked by what the receiver is:
-- `send` goes through Warp's command-block submission (`TerminalView::execute_command_or_set_pending`). For shell commands.
+- `send` goes through Warp's command-block submission (`TerminalView::execute_command_or_set_pending`). For shell commands. Use `--wait` for one-shot agent commands that need output/exit status; omit it for long-running commands, servers, tails, and TUI launches.
 - `write` and `keystroke` go through `TerminalManager::write_pty_bytes` → `PtyController::write_bytes`, which is the same raw path Warp uses for keystrokes in alt-screen / TUI mode. For driving vim/fzf/less/etc.
 
 `keystroke` accepts named keys (`enter` `tab` `esc` `up` `down` `left` `right` `home` `end` `pageup` `pagedown` `delete` `ins` `backspace` `space` `f1`–`f12`) and `ctrl-<char>` chords. See `keystroke_to_bytes` in `app/src/control_server/mod.rs`.
@@ -49,7 +49,8 @@ The CLI reports `active` for the focused tab and `focused` for the focused pane 
 ### Important quirks
 
 - **`pane send` into a non-executable pane reports an error instead of a silent false-`Ok` (issue #15, FIXED).** When the pane can't execute (still bootstrapping / an active long-running command / history not appendable), `execute_pending_command` returns `CommandExecutionResult::Blocked(reason)` (and `log::warn!`s it), and `handle_send_input` returns `Response::Error` with a human-readable reason instead of the old unconditional `Response::Ok`. The command still won't run in a busy/booting pane — but the client now learns WHY instead of the text silently sitting in the prompt. For a busy/interactive pane, use `write` + `keystroke`.
-- **`pane send` still has narrow timing races.** Immediate back-to-back sends can slip in before Warp marks the first command as running, returning `ok` while the second command fuses into the first command's prompt/output. A fresh `tab new` followed immediately by `pane send` can also return a bootstrapping error while leaving the command pending, so it executes later anyway. Agents should wait/poll `pane read` or `pane screen` between shell-command submissions, especially after creating tabs.
+- **`pane send --wait` blocks on the submitted block (issue #18, FIXED).** For one-shot shell commands, agents should prefer `pane send --wait [--timeout <secs>]` so the CLI returns the exact block output plus exit code. The default timeout is 120s. On timeout, the CLI returns a distinct error and leaves the command running so callers can fall back to `pane read`/`pane screen`.
+- **No-wait `pane send` still has narrow timing races.** Immediate back-to-back no-wait sends can slip in before Warp marks the first command as running, returning `ok` while the second command fuses into the first command's prompt/output. A fresh `tab new` followed immediately by `pane send` can also return a bootstrapping error while leaving the command pending, so it executes later anyway. Agents should use `--wait` for shell-command sequencing, or explicitly poll `pane read`/`pane screen` between no-wait submissions, especially after creating tabs.
 - **`pane send` pane id is a `--pane` FLAG, not positional.** `SendInputArgs.pane` is `#[arg(long)]` and `command` is `trailing_var_arg`, so `pane send 1990 "cmd"` folds `1990` into the command (runs `1990 cmd`) and defaults `--pane` to the focused pane — silently wrong target + garbage command. Always `pane send --pane <id> …`.
 - **`pane share` is async and may fail after the CLI returns `pending`.** `pane share-link` is the source of truth for the watch URL. If setup fails later (for example quota/plan/auth/network errors), the current CLI may only report that the pane is not sharing; the detailed reason can appear in the Warp UI/logs.
 - **Control output-format flags are not wired yet.** `--output-format json` and `WARP_OUTPUT_FORMAT=json` are accepted by the global CLI but current control pretty-printers ignore them, so list/read responses still print tables/text. Do not write JSON-dependent automation against these commands until `app/src/cli_control/mod.rs` is updated.

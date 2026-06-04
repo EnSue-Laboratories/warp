@@ -13,9 +13,11 @@ pub mod framing;
 pub mod wire;
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use futures::io::{BufReader, BufWriter};
 use futures::AsyncReadExt as _;
+use warpui::r#async::Timer;
 use warpui::{AppContext, Entity, EntityId, SingletonEntity, ViewHandle};
 
 use crate::terminal::input::{CommandExecutionResult, DenyExecutionReason};
@@ -33,6 +35,9 @@ use crate::workspace::action::WorkspaceAction;
 use crate::workspace::registry::WorkspaceRegistry;
 use crate::workspace::view::Workspace;
 use wire::{BlockEntry, PaneSummary, Request, Response, ShareScrollback, SplitDir, TabSummary};
+
+const SEND_WAIT_DEFAULT_TIMEOUT_MS: u64 = 120_000;
+const SEND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Singleton model that owns the control socket task.
 pub struct ControlModel;
@@ -137,16 +142,35 @@ async fn handle_connection(
         }
     };
 
-    let response = spawner
-        .spawn(move |_me, ctx| dispatch(request, ctx))
-        .await
-        .unwrap_or_else(|_| Response::Error {
-            message: "control_server: dispatch dropped (model gone)".into(),
-        });
+    let response = dispatch_async(request, spawner).await;
 
     if let Err(e) = framing::write_frame(&mut writer, &response).await {
         log::warn!("control_server: write response failed: {e}");
     }
+}
+
+async fn dispatch_async(request: Request, spawner: warpui::ModelSpawner<ControlModel>) -> Response {
+    match request {
+        Request::SendInput {
+            pane,
+            text,
+            wait: true,
+            timeout_ms,
+        } => handle_send_input_wait(pane, text, timeout_ms, spawner).await,
+        request => dispatch_on_main(request, spawner).await,
+    }
+}
+
+async fn dispatch_on_main(
+    request: Request,
+    spawner: warpui::ModelSpawner<ControlModel>,
+) -> Response {
+    spawner
+        .spawn(move |_me, ctx| dispatch(request, ctx))
+        .await
+        .unwrap_or_else(|_| Response::Error {
+            message: "control_server: dispatch dropped (model gone)".into(),
+        })
 }
 
 fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
@@ -154,7 +178,12 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
         Request::Ping => Response::Pong,
         Request::ListTabs => handle_list_tabs(ctx),
         Request::ListPanes { tab } => handle_list_panes(tab, ctx),
-        Request::SendInput { pane, text } => handle_send_input(pane, text, ctx),
+        Request::SendInput {
+            pane,
+            text,
+            wait: _,
+            timeout_ms: _,
+        } => handle_send_input(pane, text, ctx),
         Request::ReadPane { pane, blocks } => handle_read_pane(pane, blocks, ctx),
         Request::ReadScreen { pane } => handle_read_screen(pane, ctx),
         Request::SharePane { pane, scrollback } => handle_share_pane(pane, scrollback, ctx),
@@ -340,29 +369,148 @@ fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response 
 }
 
 fn handle_send_input(pane: Option<u64>, text: String, ctx: &mut AppContext) -> Response {
-    let pane_wire = match pane.or_else(|| first_pane_wire_id(ctx)) {
-        Some(p) => p,
-        None => {
+    match submit_send_input(pane, text, ctx) {
+        Ok(_) => Response::Ok,
+        Err(response) => response,
+    }
+}
+
+struct SubmittedCommand {
+    pane_wire: u64,
+    block_id: String,
+}
+
+fn submit_send_input(
+    pane: Option<u64>,
+    text: String,
+    ctx: &mut AppContext,
+) -> Result<SubmittedCommand, Response> {
+    let pane_wire = pane
+        .or_else(|| first_pane_wire_id(ctx))
+        .ok_or_else(|| Response::Error {
+            message: "no pane specified and no focused pane found".into(),
+        })?;
+    let view_handle = lookup_terminal_view(pane_wire, ctx).ok_or_else(|| Response::Error {
+        message: format!("pane {pane_wire} not found"),
+    })?;
+    let (result, block_id) = view_handle.update(ctx, |view, ctx| {
+        let result = view.execute_command_or_set_pending(&text, ctx);
+        let block_id = if matches!(result, CommandExecutionResult::Executed) {
+            Some(view.model.lock().block_list().active_block_id().to_string())
+        } else {
+            None
+        };
+        (result, block_id)
+    });
+    match result {
+        CommandExecutionResult::Executed => {
+            let Some(block_id) = block_id else {
+                return Err(Response::Error {
+                    message: "command executed but no block id was captured".into(),
+                });
+            };
+            Ok(SubmittedCommand {
+                pane_wire,
+                block_id,
+            })
+        }
+        CommandExecutionResult::Blocked(reason) => Err(Response::Error {
+            message: deny_execution_message(reason).into(),
+        }),
+        CommandExecutionResult::NotExecuted => Err(Response::Error {
+            message: "command was not executed".into(),
+        }),
+    }
+}
+
+async fn handle_send_input_wait(
+    pane: Option<u64>,
+    text: String,
+    timeout_ms: Option<u64>,
+    spawner: warpui::ModelSpawner<ControlModel>,
+) -> Response {
+    let submitted = match spawner
+        .spawn(move |_me, ctx| submit_send_input(pane, text, ctx))
+        .await
+    {
+        Ok(Ok(submitted)) => submitted,
+        Ok(Err(response)) => return response,
+        Err(_) => {
             return Response::Error {
-                message: "no pane specified and no focused pane found".into(),
+                message: "control_server: dispatch dropped (model gone)".into(),
             }
         }
     };
+
+    wait_for_submitted_block(submitted, timeout_ms, spawner).await
+}
+
+enum BlockWaitPoll {
+    Running(BlockEntry),
+    Done(BlockEntry),
+    Error(Response),
+}
+
+async fn wait_for_submitted_block(
+    submitted: SubmittedCommand,
+    timeout_ms: Option<u64>,
+    spawner: warpui::ModelSpawner<ControlModel>,
+) -> Response {
+    let timeout_ms = timeout_ms.unwrap_or(SEND_WAIT_DEFAULT_TIMEOUT_MS);
+    let timeout = Duration::from_millis(timeout_ms);
+    let started = Instant::now();
+
+    loop {
+        let pane_wire = submitted.pane_wire;
+        let block_id = submitted.block_id.clone();
+        let poll = spawner
+            .spawn(move |_me, ctx| poll_submitted_block(pane_wire, block_id, ctx))
+            .await
+            .unwrap_or_else(|_| {
+                BlockWaitPoll::Error(Response::Error {
+                    message: "control_server: dispatch dropped (model gone)".into(),
+                })
+            });
+
+        match poll {
+            BlockWaitPoll::Done(block) => return Response::Block { block },
+            BlockWaitPoll::Running(block) => {
+                if started.elapsed() >= timeout {
+                    return Response::SendTimedOut {
+                        pane: submitted.pane_wire,
+                        timeout_ms,
+                        block,
+                    };
+                }
+            }
+            BlockWaitPoll::Error(response) => return response,
+        }
+
+        let remaining = timeout.saturating_sub(started.elapsed());
+        Timer::after(remaining.min(SEND_WAIT_POLL_INTERVAL)).await;
+    }
+}
+
+fn poll_submitted_block(pane_wire: u64, block_id: String, ctx: &mut AppContext) -> BlockWaitPoll {
+    use crate::terminal::model::BlockId;
+
     let Some(view_handle) = lookup_terminal_view(pane_wire, ctx) else {
-        return Response::Error {
+        return BlockWaitPoll::Error(Response::Error {
             message: format!("pane {pane_wire} not found"),
-        };
+        });
     };
-    match view_handle.update(ctx, |view, ctx| {
-        view.execute_command_or_set_pending(&text, ctx)
-    }) {
-        CommandExecutionResult::Executed => Response::Ok,
-        CommandExecutionResult::Blocked(reason) => Response::Error {
-            message: deny_execution_message(reason).into(),
-        },
-        CommandExecutionResult::NotExecuted => Response::Error {
-            message: "command was not executed".into(),
-        },
+    let needle = BlockId::from(block_id.clone());
+    let model = view_handle.as_ref(ctx).model.lock();
+    let Some(block) = model.block_list().block_with_id(&needle) else {
+        return BlockWaitPoll::Error(Response::Error {
+            message: format!("block {block_id} not found"),
+        });
+    };
+    let entry = block_to_entry(block, pane_wire);
+    if block.is_done() {
+        BlockWaitPoll::Done(entry)
+    } else {
+        BlockWaitPoll::Running(entry)
     }
 }
 
@@ -535,10 +683,10 @@ fn block_to_entry(b: &crate::terminal::model::block::Block, pane_wire: u64) -> B
         pane_id: pane_wire,
         command,
         output,
-        exit_code: Some(b.exit_code().value()),
+        exit_code: b.is_done().then(|| b.exit_code().value()),
         pwd: b.pwd().cloned(),
-        started_at: None,
-        completed_at: None,
+        started_at: b.start_ts().map(|ts| ts.to_rfc3339()),
+        completed_at: b.completed_ts().map(|ts| ts.to_rfc3339()),
     }
 }
 

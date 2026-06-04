@@ -59,15 +59,20 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
                 None => None,
             },
         },
-        ControlCommand::Pane(PaneCommand::Send(SendInputArgs { pane, command })) => {
-            Request::SendInput {
-                pane: match pane {
-                    Some(s) => Some(parse_u64(&s, "pane")?),
-                    None => None,
-                },
-                text: command.join(" "),
-            }
-        }
+        ControlCommand::Pane(PaneCommand::Send(SendInputArgs {
+            pane,
+            wait,
+            timeout,
+            command,
+        })) => Request::SendInput {
+            pane: match pane {
+                Some(s) => Some(parse_u64(&s, "pane")?),
+                None => None,
+            },
+            text: command.join(" "),
+            wait,
+            timeout_ms: timeout.map(|secs| secs.saturating_mul(1000)),
+        },
         ControlCommand::Pane(PaneCommand::Write(WriteBytesArgs { pane, text })) => {
             Request::WriteBytes {
                 pane: match pane {
@@ -212,9 +217,28 @@ fn print_response(response: Response) -> Result<()> {
         Response::ShareStopped { pane } => println!("sharing stopped for pane {pane}"),
         Response::Blocks { blocks } => print_blocks(&blocks),
         Response::Block { block } => print_one_block(&block),
+        Response::SendTimedOut {
+            pane: _,
+            timeout_ms,
+            block,
+        } => {
+            print_one_block(&block);
+            return Err(anyhow!(
+                "command still running after {}; it was not stopped",
+                format_duration_ms(timeout_ms)
+            ));
+        }
         Response::Error { message } => return Err(anyhow!("{message}")),
     }
     Ok(())
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    if ms % 1000 == 0 {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{ms}ms")
+    }
 }
 
 fn print_tabs(tabs: &[TabSummary]) {
@@ -282,7 +306,13 @@ fn print_blocks(blocks: &[BlockEntry]) {
             Some(c) => c.to_string(),
             None => "-".into(),
         };
-        let command = b.command.as_deref().unwrap_or("-").lines().next().unwrap_or("");
+        let command = b
+            .command
+            .as_deref()
+            .unwrap_or("-")
+            .lines()
+            .next()
+            .unwrap_or("");
         println!("{:<40} {:<10} {:<8} {}", b.id, b.pane_id, exit, command);
     }
 }
