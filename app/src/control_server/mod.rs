@@ -29,6 +29,7 @@ use warpui::TypedActionView;
 
 use crate::pane_group::tree::Direction as PaneDirection;
 use crate::pane_group::{PaneGroup, PaneGroupAction};
+use crate::terminal::model::terminal_model::TerminalModel;
 use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
 use crate::terminal::shared_session::{
     join_link, SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionSource,
@@ -38,15 +39,16 @@ use crate::workspace::action::WorkspaceAction;
 use crate::workspace::registry::WorkspaceRegistry;
 use crate::workspace::view::Workspace;
 use wire::{
-    BlockEntry, PaneScreenSnapshot, PaneSnapshot, PaneSnapshotPane, PaneSummary, Request, Response,
-    ShareScrollback, SplitDir, TabSummary, TextMatch, TextMatchSource, WaitForTextBlockField,
-    WaitForTextMode, WaitForTextSince,
+    BlockEntry, PaneScreenSnapshot, PaneSnapshot, PaneSnapshotPane, PaneStatus, PaneSummary,
+    Request, Response, ShareScrollback, SplitDir, TabSummary, TextMatch, TextMatchSource,
+    WaitForTextBlockField, WaitForTextMode, WaitForTextSince,
 };
 
 const SEND_WAIT_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const SEND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WAIT_TEXT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+const PANE_LIST_PREVIEW_MAX_CHARS: usize = 60;
 
 /// Singleton model that owns the control socket task.
 pub struct ControlModel;
@@ -214,7 +216,11 @@ fn dispatch(request: Request, ctx: &mut AppContext) -> Response {
     match request {
         Request::Ping => Response::Pong,
         Request::ListTabs => handle_list_tabs(ctx),
-        Request::ListPanes { tab } => handle_list_panes(tab, ctx),
+        Request::ListPanes {
+            tab,
+            include_preview,
+            json,
+        } => handle_list_panes(tab, include_preview, json, ctx),
         Request::SendInput {
             pane,
             text,
@@ -376,9 +382,126 @@ fn visible_terminal_views(pg: &PaneGroup, ctx: &AppContext) -> Vec<ViewHandle<Te
         .collect()
 }
 
-fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response {
+struct PaneActivitySummary {
+    status: PaneStatus,
+    running: bool,
+    foreground_process: Option<String>,
+    preview: Option<String>,
+}
+
+fn pane_activity_summary(
+    view: &TerminalView,
+    include_preview: bool,
+    ctx: &AppContext,
+) -> PaneActivitySummary {
+    let model = view.model.lock();
+    let active_block = model.block_list().active_block();
+    let active_command = active_block.command_to_string();
+    let running = pane_is_running(&model, active_command.trim().is_empty());
+    let foreground_process = if running {
+        active_block
+            .top_level_command(view.sessions_model().as_ref(ctx))
+            .or_else(|| foreground_process_from_command(&active_command))
+            .map(strip_command_path)
+    } else {
+        None
+    };
+    let preview = include_preview.then(|| pane_preview(&model)).flatten();
+
+    PaneActivitySummary {
+        status: if running {
+            PaneStatus::Running
+        } else {
+            PaneStatus::Idle
+        },
+        running,
+        foreground_process,
+        preview,
+    }
+}
+
+fn pane_is_running(model: &TerminalModel, active_command_is_empty: bool) -> bool {
+    let block_list = model.block_list();
+    let active_block = block_list.active_block();
+    !block_list.is_bootstrapped()
+        || active_block.is_executing()
+        || (active_block.started() && !active_command_is_empty && !active_block.is_done())
+}
+
+fn foreground_process_from_command(command: &str) -> Option<String> {
+    warp_completer::parsers::simple::top_level_command(
+        command,
+        warp_util::path::EscapeChar::Backslash,
+    )
+    .or_else(|| {
+        command
+            .split_whitespace()
+            .find(|part| !part.contains('='))
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn strip_command_path(command: String) -> String {
+    std::path::Path::new(&command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&command)
+        .to_string()
+}
+
+fn pane_preview(model: &TerminalModel) -> Option<String> {
+    let (alt_screen, screen_text) = model.screen_to_string();
+    if alt_screen {
+        return preview_line_from_text(&screen_text);
+    }
+
+    preview_line_from_blocks(model).or_else(|| preview_line_from_text(&screen_text))
+}
+
+fn preview_line_from_blocks(model: &TerminalModel) -> Option<String> {
+    for block in model.block_list().blocks().iter().rev() {
+        if let Some(line) = preview_line_from_text(&block.output_to_string()) {
+            return Some(line);
+        }
+        if let Some(line) = preview_line_from_text(&block.command_to_string()) {
+            return Some(line);
+        }
+    }
+    None
+}
+
+fn preview_line_from_text(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| truncate_preview_line(line, PANE_LIST_PREVIEW_MAX_CHARS))
+}
+
+fn truncate_preview_line(line: &str, max_chars: usize) -> String {
+    let normalized = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+
+    let keep = max_chars.saturating_sub(3);
+    let mut truncated = normalized.chars().take(keep).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn handle_list_panes(
+    filter_tab: Option<u64>,
+    include_preview: bool,
+    json: bool,
+    ctx: &mut AppContext,
+) -> Response {
     let Some(workspace) = active_workspace(ctx) else {
-        return Response::Panes { panes: vec![] };
+        return Response::Panes {
+            panes: vec![],
+            include_preview,
+            json,
+        };
     };
     let ws = workspace.as_ref(ctx);
     let active_idx = ws.active_tab_index();
@@ -397,7 +520,9 @@ fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response 
             .map(|v| entity_id_to_u64(v.id()));
         for view in visible_terminal_views(pg, ctx) {
             let wire_id = entity_id_to_u64(view.id());
-            let cwd = view.as_ref(ctx).pwd();
+            let terminal_view = view.as_ref(ctx);
+            let cwd = terminal_view.pwd();
+            let activity = pane_activity_summary(terminal_view, include_preview, ctx);
             let is_focused = tab_idx == active_idx && focused_view_id == Some(wire_id);
             panes.push(PaneSummary {
                 id: wire_id,
@@ -406,10 +531,18 @@ fn handle_list_panes(filter_tab: Option<u64>, ctx: &mut AppContext) -> Response 
                 title: None,
                 cwd,
                 focused: is_focused,
+                status: activity.status,
+                running: activity.running,
+                foreground_process: activity.foreground_process,
+                preview: activity.preview,
             });
         }
     }
-    Response::Panes { panes }
+    Response::Panes {
+        panes,
+        include_preview,
+        json,
+    }
 }
 
 fn handle_send_input(pane: Option<u64>, text: String, ctx: &mut AppContext) -> Response {

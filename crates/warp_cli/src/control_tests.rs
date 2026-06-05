@@ -3,9 +3,22 @@ use clap::Parser;
 use crate::{Args, CliCommand, Command};
 
 use super::{
-    ControlCommand, PaneCommand, PaneSnapshotArgs, SendInputArgs, WaitForTextArgs,
+    ControlCommand, PaneCommand, PaneListArgs, PaneSnapshotArgs, SendInputArgs, WaitForTextArgs,
     WaitForTextBlockField, WaitForTextMode, WaitForTextSince,
 };
+
+fn parse_pane_list<const N: usize>(args: [&str; N]) -> PaneListArgs {
+    let args = Args::try_parse_from(args).expect("control pane list should parse");
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("expected command-line command");
+    };
+    let CliCommand::Control(ControlCommand::Pane(PaneCommand::List(list_args))) =
+        boxed_cmd.as_ref()
+    else {
+        panic!("expected control pane list command");
+    };
+    list_args.clone()
+}
 
 fn parse_pane_send<const N: usize>(args: [&str; N]) -> SendInputArgs {
     let args = Args::try_parse_from(args).expect("control pane send should parse");
@@ -44,6 +57,33 @@ fn parse_pane_wait_for_text<const N: usize>(args: [&str; N]) -> WaitForTextArgs 
         panic!("expected control pane wait-for-text command");
     };
     wait_args.clone()
+}
+
+#[test]
+fn pane_list_defaults_to_table_without_preview() {
+    let args = parse_pane_list(["warp", "control", "pane", "list"]);
+
+    assert_eq!(args.tab, None);
+    assert_eq!(args.preview, false);
+    assert_eq!(args.json, false);
+}
+
+#[test]
+fn pane_list_accepts_preview_json_and_tab_filter() {
+    let args = parse_pane_list([
+        "warp",
+        "control",
+        "pane",
+        "list",
+        "--tab",
+        "77",
+        "--preview",
+        "--json",
+    ]);
+
+    assert_eq!(args.tab.as_deref(), Some("77"));
+    assert_eq!(args.preview, true);
+    assert_eq!(args.json, true);
 }
 
 #[test]
