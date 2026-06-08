@@ -56,12 +56,16 @@ fn build_request(cmd: ControlCommand) -> Result<Request> {
         ControlCommand::Tab(TabCommand::Focus(TabIdArg { id })) => Request::FocusTab {
             tab: parse_u64(&id, "tab")?,
         },
-        ControlCommand::Pane(PaneCommand::List(PaneListArgs { tab })) => Request::ListPanes {
-            tab: match tab {
-                Some(s) => Some(parse_u64(&s, "tab")?),
-                None => None,
-            },
-        },
+        ControlCommand::Pane(PaneCommand::List(PaneListArgs { tab, preview, json })) => {
+            Request::ListPanes {
+                tab: match tab {
+                    Some(s) => Some(parse_u64(&s, "tab")?),
+                    None => None,
+                },
+                include_preview: preview || json,
+                json,
+            }
+        }
         ControlCommand::Pane(PaneCommand::Send(SendInputArgs {
             pane,
             wait,
@@ -254,7 +258,11 @@ fn print_response(response: Response) -> Result<()> {
         Response::Pong => println!("pong"),
         Response::Ok => println!("ok"),
         Response::Tabs { tabs } => print_tabs(&tabs),
-        Response::Panes { panes } => print_panes(&panes),
+        Response::Panes {
+            panes,
+            include_preview,
+            json,
+        } => print_panes(&panes, include_preview, json)?,
         Response::PaneOutput { pane, blocks } => print_pane_output(pane, &blocks),
         Response::Screen {
             pane,
@@ -375,23 +383,48 @@ fn print_tabs(tabs: &[TabSummary]) {
     }
 }
 
-fn print_panes(panes: &[PaneSummary]) {
+fn print_panes(panes: &[PaneSummary], include_preview: bool, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(panes)?);
+        return Ok(());
+    }
     if panes.is_empty() {
         println!("(no panes)");
-        return;
+        return Ok(());
     }
-    println!(
-        "{:<10} {:<8} {:<6} {:<8} {}",
-        "PANE", "TAB", "INDEX", "FOCUSED", "CWD"
-    );
+    if include_preview {
+        println!(
+            "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} {:<44} {}",
+            "PANE", "TAB", "INDEX", "FOCUSED", "STATUS", "FG", "PREVIEW", "CWD"
+        );
+    } else {
+        println!(
+            "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} {}",
+            "PANE", "TAB", "INDEX", "FOCUSED", "STATUS", "FG", "CWD"
+        );
+    }
     for p in panes {
         let cwd = p.cwd.as_deref().unwrap_or("-");
         let focused = if p.focused { "yes" } else { "" };
-        println!(
-            "{:<10} {:<8} {:<6} {:<8} {}",
-            p.id, p.tab_id, p.tab_index, focused, cwd
-        );
+        let status = match p.status {
+            crate::control_server::wire::PaneStatus::Idle => "idle",
+            crate::control_server::wire::PaneStatus::Running => "running",
+        };
+        let foreground = p.foreground_process.as_deref().unwrap_or("-");
+        if include_preview {
+            let preview = p.preview.as_deref().unwrap_or("-");
+            println!(
+                "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} {:<44} {}",
+                p.id, p.tab_id, p.tab_index, focused, status, foreground, preview, cwd
+            );
+        } else {
+            println!(
+                "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} {}",
+                p.id, p.tab_id, p.tab_index, focused, status, foreground, cwd
+            );
+        }
     }
+    Ok(())
 }
 
 fn print_pane_output(pane: u64, blocks: &[BlockEntry]) {

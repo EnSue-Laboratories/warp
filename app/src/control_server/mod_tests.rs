@@ -120,3 +120,25 @@ fn truncate_text_preserves_utf8_boundaries_at_the_tail() {
     assert_eq!(text, "def");
     assert_eq!(truncated, true);
 }
+
+#[test]
+fn preview_line_uses_last_non_empty_line_and_truncates() {
+    let long_line = "status: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let preview = preview_line_from_text(&format!("first\n\n{long_line}")).unwrap();
+
+    assert_eq!(
+        preview,
+        "status: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW..."
+    );
+    assert_eq!(preview.chars().count(), PANE_LIST_PREVIEW_MAX_CHARS);
+}
+
+#[test]
+fn foreground_process_skips_leading_env_vars_and_strips_paths() {
+    let command = "PAGER=0 /usr/local/bin/node server.js";
+    let process = foreground_process_from_command(command)
+        .map(strip_command_path)
+        .unwrap();
+
+    assert_eq!(process, "node");
+}

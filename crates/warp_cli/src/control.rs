@@ -159,6 +159,14 @@ pub struct PaneListArgs {
     /// Restrict to panes in this tab.
     #[arg(long)]
     pub tab: Option<String>,
+
+    /// Include a short content preview for each pane.
+    #[arg(long)]
+    pub preview: bool,
+
+    /// Print panes as structured JSON. JSON always includes previews.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, Args)]
