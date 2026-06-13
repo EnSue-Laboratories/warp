@@ -46,7 +46,7 @@ mod gpu_state;
 mod input_classifier;
 mod interval_timer;
 mod linear;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "local_fs")]
 mod local_control;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod login_item;
@@ -2132,7 +2132,7 @@ pub(crate) fn initialize_app(
         ];
         http_server::HttpServer::new(routers, ctx)
     });
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(feature = "local_fs")]
     if matches!(
         launch_mode,
         LaunchMode::App { .. } | LaunchMode::Test { .. }
