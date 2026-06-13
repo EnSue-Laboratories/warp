@@ -1076,17 +1076,16 @@ impl CrossWindowTabDrag {
         // Is the cursor still in this target window's body (not its tab bar)?
         let still_over_target = match ctx.window_bounds(&target_window_id) {
             Some(wb) if wb.contains_point(drag_center_on_screen) => {
-                let in_tab_bar =
-                    tab_bar_rects_for_window(target_window_id, ctx)
-                        .into_iter()
-                        .any(|tb| {
-                            let on_screen = RectF::new(
-                                vec2f(wb.min_x() + tb.min_x(), wb.min_y() + tb.min_y()),
-                                tb.size(),
-                            );
-                            expanded_rect(on_screen, TAB_BAR_HIT_MARGIN)
-                                .contains_point(drag_center_on_screen)
-                        });
+                let in_tab_bar = tab_bar_rects_for_window(target_window_id, ctx)
+                    .into_iter()
+                    .any(|tb| {
+                        let on_screen = RectF::new(
+                            vec2f(wb.min_x() + tb.min_x(), wb.min_y() + tb.min_y()),
+                            tb.size(),
+                        );
+                        expanded_rect(on_screen, TAB_BAR_HIT_MARGIN)
+                            .contains_point(drag_center_on_screen)
+                    });
                 !in_tab_bar
             }
             _ => false,

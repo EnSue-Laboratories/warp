@@ -75,8 +75,6 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::AgentModeWorkflows,
         #[cfg(feature = "ai_rules")]
         FeatureFlag::AIRules,
-        #[cfg(feature = "ssh_tmux_wrapper")]
-        FeatureFlag::SSHTmuxWrapper,
         #[cfg(feature = "shell_selector")]
         FeatureFlag::ShellSelector,
         #[cfg(feature = "integration_command")]
@@ -415,16 +413,12 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::ConversationsAsContext,
         #[cfg(feature = "incremental_auto_reload")]
         FeatureFlag::IncrementalAutoReload,
-        #[cfg(feature = "orchestration_v2")]
-        FeatureFlag::OrchestrationV2,
-        #[cfg(feature = "orchestration_pill_bar")]
-        FeatureFlag::OrchestrationPillBar,
-        #[cfg(feature = "orchestration_viewer_pill_bar")]
-        FeatureFlag::OrchestrationViewerPillBar,
-        #[cfg(feature = "orchestration_viewer_streamer")]
-        FeatureFlag::OrchestrationViewerStreamer,
         #[cfg(feature = "run_agents_tool")]
         FeatureFlag::RunAgentsTool,
+        #[cfg(feature = "orchestration_viewer_streamer")]
+        FeatureFlag::OrchestrationViewerStreamer,
+        #[cfg(feature = "owner_orchestration_ancestor_streamer")]
+        FeatureFlag::OwnerOrchestrationAncestorStreamer,
         #[cfg(feature = "pending_user_query_indicator")]
         FeatureFlag::PendingUserQueryIndicator,
         #[cfg(feature = "queue_slash_command")]
@@ -435,6 +429,8 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::KittyKeyboardProtocol,
         #[cfg(feature = "inline_menu_headers")]
         FeatureFlag::InlineMenuHeaders,
+        #[cfg(feature = "restore_prompt_on_inline_model_selector_search")]
+        FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
         #[cfg(feature = "directory_tab_colors")]
         FeatureFlag::DirectoryTabColors,
         #[cfg(feature = "open_warp_new_settings_modes")]
@@ -449,6 +445,10 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::TabConfigs,
         #[cfg(feature = "grouped_tabs")]
         FeatureFlag::GroupedTabs,
+        #[cfg(feature = "pinned_tabs")]
+        FeatureFlag::PinnedTabs,
+        #[cfg(feature = "warp_control_cli")]
+        FeatureFlag::WarpControlCli,
         #[cfg(feature = "agent_harness")]
         FeatureFlag::AgentHarness,
         #[cfg(feature = "oz_handoff")]
@@ -497,6 +497,8 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::RemoteCodeReview,
         #[cfg(feature = "custom_inference_endpoints")]
         FeatureFlag::CustomInferenceEndpoints,
+        #[cfg(feature = "supergrok")]
+        FeatureFlag::SuperGrok,
     ]);
 
     flags

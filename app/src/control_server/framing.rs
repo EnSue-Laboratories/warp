@@ -8,11 +8,12 @@ use serde::{de::DeserializeOwned, Serialize};
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024; // 16 MiB hard cap
 
-pub async fn read_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(
-    reader: &mut R,
-) -> Result<T> {
+pub async fn read_frame<R: AsyncRead + Unpin, T: DeserializeOwned>(reader: &mut R) -> Result<T> {
     let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf).await.context("read length")?;
+    reader
+        .read_exact(&mut len_buf)
+        .await
+        .context("read length")?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len == 0 || len > MAX_FRAME_BYTES {
         return Err(anyhow!("invalid frame length: {len}"));
@@ -54,10 +55,7 @@ pub fn read_frame_sync<R: std::io::Read, T: DeserializeOwned>(reader: &mut R) ->
 }
 
 /// Synchronous variant used by the CLI client.
-pub fn write_frame_sync<W: std::io::Write, T: Serialize>(
-    writer: &mut W,
-    value: &T,
-) -> Result<()> {
+pub fn write_frame_sync<W: std::io::Write, T: Serialize>(writer: &mut W, value: &T) -> Result<()> {
     let body = serde_json::to_vec(value).context("encode JSON")?;
     if body.len() > MAX_FRAME_BYTES {
         return Err(anyhow!("frame too large: {} bytes", body.len()));

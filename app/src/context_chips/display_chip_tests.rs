@@ -1,7 +1,5 @@
-use super::{
-    format_change_directory_command, format_create_git_branch_command, format_git_branch_command,
-    truncate_from_beginning, CreateGitBranch, GitLineChanges, GitWorktree,
-};
+use super::{truncate_from_beginning, CreateGitBranch, GitBranch, GitLineChanges, GitWorktree};
+use crate::context_chips::display_chip::PromptChipShellCommand;
 use crate::context_chips::display_menu::GenericMenuItem;
 use crate::context_chips::git_branch_on_click::{GitBranchOnClickValue, GitWorktreeOnClickValue};
 use crate::context_chips::{github_pr_display_text_from_url, ContextChipKind};
@@ -51,18 +49,22 @@ fn test_format_git_branch_command_checks_out_normal_branch() {
     let value = GitBranchOnClickValue::new("feature/alice's-work".to_string()).encode();
 
     assert_eq!(
-        format_git_branch_command(&value),
-        "git checkout 'feature/alice'\\''s-work'"
+        GitBranch(value).prompt_chip_command(),
+        PromptChipShellCommand::GitCheckout {
+            branch_name: "feature/alice\'s-work".to_string()
+        }
     );
 }
 
 #[test]
 fn test_git_worktree_command_cds_to_path() {
     let value = GitWorktreeOnClickValue::new("/tmp/repo feature-a".to_string(), None).encode();
-    let decoded = GitWorktreeOnClickValue::decode(&value);
+
     assert_eq!(
-        format_change_directory_command(&decoded.path),
-        "cd '/tmp/repo feature-a'"
+        GitWorktree(value).prompt_chip_command(),
+        PromptChipShellCommand::ChangeDirectory {
+            dir_name: "/tmp/repo feature-a".to_string()
+        }
     );
 }
 
@@ -89,19 +91,10 @@ fn test_git_worktree_action_data_round_trips_encoded_value() {
 }
 
 #[test]
-fn test_format_create_git_branch_command_quotes_branch_and_appends_double_dash() {
-    assert_eq!(
-        format_create_git_branch_command("feature/xyz"),
-        "git checkout -b 'feature/xyz' --"
-    );
-}
+fn test_git_branch_menu_icon_uses_branch_icon_for_normal_branch() {
+    let value = GitBranchOnClickValue::new("feature-a".to_string()).encode();
 
-#[test]
-fn test_format_create_git_branch_command_escapes_single_quotes() {
-    assert_eq!(
-        format_create_git_branch_command("alice's-branch"),
-        "git checkout -b 'alice'\\''s-branch' --"
-    );
+    assert_eq!(GitBranch(value).icon_for_menu(), Icon::GitBranch);
 }
 
 #[test]
@@ -115,6 +108,12 @@ fn test_create_git_branch_action_data_returns_branch_name() {
     let item = CreateGitBranch::new("feature/xyz".to_string());
     assert_eq!(item.action_data(), "feature/xyz");
     assert_eq!(item.branch_name(), "feature/xyz");
+    assert_eq!(
+        item.prompt_chip_command(),
+        PromptChipShellCommand::GitCreateAndCheckoutBranch {
+            branch_name: "feature/xyz".to_string()
+        }
+    );
 }
 
 #[test]

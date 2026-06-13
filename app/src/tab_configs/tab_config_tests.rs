@@ -923,7 +923,10 @@ ssh_args = ["-p", "2222"]
 "#;
     let config: TabConfig = toml::from_str(toml_str).expect("Should parse ssh pane");
     assert_eq!(config.panes[0].pane_type, Some(TabConfigPaneType::Ssh));
-    assert_eq!(config.panes[0].ssh_host.as_deref(), Some("deploy@prod.example.com"));
+    assert_eq!(
+        config.panes[0].ssh_host.as_deref(),
+        Some("deploy@prod.example.com")
+    );
     assert_eq!(
         config.panes[0].ssh_args.as_deref(),
         Some(["-p".to_string(), "2222".to_string()].as_slice())

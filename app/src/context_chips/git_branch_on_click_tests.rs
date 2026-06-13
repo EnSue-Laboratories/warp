@@ -11,8 +11,9 @@ fn test_git_branch_on_click_value_decode_strips_legacy_worktree_metadata() {
     // Older builds packed worktree metadata after the encoded-value
     // separator. New code stores worktrees in a separate chip; if we
     // see a legacy payload we should still produce a valid branch name.
-    let value =
-        format!("feature-a{ENCODED_VALUE_SEPARATOR}worktree{ENCODED_VALUE_SEPARATOR}/repo/feature-a");
+    let value = format!(
+        "feature-a{ENCODED_VALUE_SEPARATOR}worktree{ENCODED_VALUE_SEPARATOR}/repo/feature-a"
+    );
     assert_eq!(
         GitBranchOnClickValue::decode(&value),
         GitBranchOnClickValue::new("feature-a".to_string())

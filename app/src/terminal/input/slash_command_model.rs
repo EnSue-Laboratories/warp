@@ -306,10 +306,8 @@ impl SlashCommandModel {
 
         let skill_name = possible_command.strip_prefix('/')?;
 
-        let cwd_path = self
-            .active_session
-            .as_ref(ctx)
-            .current_working_directory_location(ctx);
+        let active_session = self.active_session.as_ref(ctx);
+        let cwd_path = active_session.current_working_directory_location(ctx);
         let skills = SkillManager::handle(ctx)
             .as_ref(ctx)
             .get_skills_for_working_directory(cwd_path.as_ref(), ctx);
@@ -374,9 +372,8 @@ impl SlashCommandModel {
         // agent shortcuts), re-evaluate. This handles the case where the user types a
         // query with `/` (disabling slash commands), then edits the buffer to insert
         // `/plan `, `!foo`, or `?foo` at the beginning.
-        let is_trigger_prefix = |s: &str| {
-            s.starts_with('/') || s.chars().next().is_some_and(is_agent_shorthand_prefix)
-        };
+        let is_trigger_prefix =
+            |s: &str| s.starts_with('/') || s.chars().next().is_some_and(is_agent_shorthand_prefix);
         let did_add_trigger = is_trigger_prefix(new) && !is_trigger_prefix(old);
         if self.state.is_disabled() && !did_add_trigger {
             return;
