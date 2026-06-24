@@ -883,6 +883,10 @@ pub enum FeatureFlag {
     /// Gates the SuperGrok feature, which lets users
     /// connect a Grok subscription instead of pasting an API key.
     SuperGrok,
+
+    /// Gates the custom model router feature, which allows users to define
+    /// their own model routers.
+    CustomModelRouters,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -949,6 +953,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::GPTConfigurableContextWindow,
     FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
     FeatureFlag::WarpControlCli,
+    FeatureFlag::CustomModelRouters,
     FeatureFlag::PinnedTabs,
 ];
 
