@@ -887,6 +887,9 @@ pub enum FeatureFlag {
     /// Gates the custom model router feature, which allows users to define
     /// their own model routers.
     CustomModelRouters,
+
+    /// Enables state-mutating recovery for abnormal terminal lifecycle sequences.
+    TerminalLifecycleRecovery,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
