@@ -957,6 +957,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
     FeatureFlag::WarpControlCli,
     FeatureFlag::PinnedTabs,
+    FeatureFlag::TerminalLifecycleRecovery,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Warp).
