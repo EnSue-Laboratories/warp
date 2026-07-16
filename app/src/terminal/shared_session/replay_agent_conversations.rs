@@ -166,6 +166,7 @@ fn create_finished_event_from_conversation(conversation: &AIConversation) -> Res
     let usage_metadata = Some(
         api_response_event::stream_finished::ConversationUsageMetadata {
             context_window_usage: conversation.context_window_usage(),
+            total_input_tokens: 0,
             credits_spent: conversation.inference_credits_spent(),
             platform_credits_spent: conversation.platform_credits_spent(),
             summarized: conversation.was_summarized(),
@@ -191,6 +192,7 @@ fn create_finished_event_from_conversation(conversation: &AIConversation) -> Res
                 .iter()
                 .filter_map(|u| u.to_proto_custom_endpoint_usage())
                 .collect(),
+            context_window_segments: vec![],
         },
     );
 

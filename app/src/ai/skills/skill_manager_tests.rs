@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 
 use ai::skills::{get_provider_for_path, ParsedSkill, SkillProvider, SkillReference, SkillScope};
 use repo_metadata::repositories::DetectedRepositories;
@@ -391,6 +392,7 @@ description: Test skill with variables
 ---
 
 Run `{{warp_cli_binary_name}}` to connect to {{warp_server_url}}.
+Use `{{warpctrl_binary_name}}` from {{warpctrl_wrapper_path}}.
 "#,
     )
     .unwrap();
@@ -404,6 +406,12 @@ Run `{{warp_cli_binary_name}}` to connect to {{warp_server_url}}.
     let expected_url = ChannelState::server_root_url();
     assert!(skill.content.contains(&format!(
         "Run `{expected_cli}` to connect to {expected_url}."
+    )));
+    let expected_warpctrl = ChannelState::channel().warpctrl_command_name();
+    let expected_wrapper = resources_dir.join("bin").join(expected_warpctrl);
+    assert!(skill.content.contains(&format!(
+        "Use `{expected_warpctrl}` from {}.",
+        expected_wrapper.display()
     )));
 }
 
@@ -514,9 +522,11 @@ fn test_build_bundled_skill_context() {
     let skill_dir = resources_dir.join("bundled/skills/test-skill");
     let context = build_bundled_skill_context(resources_dir, &skill_dir);
 
-    assert_eq!(context.len(), 7);
+    assert_eq!(context.len(), 9);
     assert!(context.contains_key("warp_server_url"));
     assert!(context.contains_key("warp_cli_binary_name"));
+    assert!(context.contains_key("warpctrl_binary_name"));
+    assert!(context.contains_key("warpctrl_wrapper_path"));
     assert!(context.contains_key("warp_url_scheme"));
     assert!(context.contains_key("settings_file_path"));
     assert!(context.contains_key("keybindings_file_path"));
@@ -541,6 +551,18 @@ fn test_build_bundled_skill_context() {
         ChannelState::channel().cli_command_name()
     );
     assert_eq!(
+        context.get("warpctrl_binary_name").unwrap(),
+        ChannelState::channel().warpctrl_command_name()
+    );
+    assert_eq!(
+        context.get("warpctrl_wrapper_path").unwrap(),
+        &resources_dir
+            .join("bin")
+            .join(ChannelState::channel().warpctrl_command_name())
+            .display()
+            .to_string()
+    );
+    assert_eq!(
         context.get("warp_url_scheme").unwrap(),
         ChannelState::url_scheme()
     );
@@ -556,6 +578,18 @@ fn test_build_bundled_skill_context() {
             .display()
             .to_string()
     );
+}
+
+fn bundled_test_skill(id: &str, description: &str) -> ParsedSkill {
+    ParsedSkill {
+        name: id.to_owned(),
+        description: description.to_owned(),
+        path: LocalOrRemotePath::Local(format!("/bundled/skills/{id}/SKILL.md").into()),
+        content: format!("# {id}"),
+        line_range: None,
+        provider: SkillProvider::Warp,
+        scope: SkillScope::Bundled,
+    }
 }
 
 fn make_remote_skill(host_id: &HostId, name: &str) -> ParsedSkill {
@@ -610,15 +644,7 @@ fn get_skills_for_working_directory_respects_location() {
     };
     let same_host_skill = make_remote_skill(&same_host_id, "same-host-project");
     let other_host_skill = make_remote_skill(&other_host_id, "other-host-project");
-    let bundled_skill = ParsedSkill {
-        name: "bundled".to_string(),
-        description: "bundled skill".to_string(),
-        path: LocalOrRemotePath::Local("/bundled/skills/bundled/SKILL.md".into()),
-        content: "# bundled".to_string(),
-        line_range: None,
-        provider: SkillProvider::Warp,
-        scope: SkillScope::Bundled,
-    };
+    let bundled_skill = bundled_test_skill("bundled", "bundled skill");
     // A bundled skill from the remote host's daemon-pushed catalog.
     let remote_bundled_skill = ParsedSkill {
         name: "remote-bundled".to_string(),
@@ -735,6 +761,115 @@ fn get_skills_for_working_directory_respects_location() {
     });
 }
 
+#[test]
+fn feature_gated_bundled_skill_is_listed_only_when_enabled() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(DirectoryWatcher::new);
+        app.add_singleton_model(AISettings::new_with_defaults);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        app.add_singleton_model(RepoMetadataModel::new);
+        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
+        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
+        let handle = app.add_singleton_model(SkillManager::new);
+        let bundled_skills_guard = FeatureFlag::BundledSkills.override_enabled(true);
+        let warp_control_cli = FeatureFlag::WarpControlCli.override_enabled(false);
+
+        handle.update(&mut app, |manager, _| {
+            manager.add_bundled_skill_for_testing(
+                "warpctrl",
+                bundled_test_skill("warpctrl", "Control Warp"),
+                BundledSkillActivation::RequiresFeature(FeatureFlag::WarpControlCli),
+            );
+            manager.add_bundled_skill_for_testing(
+                "always",
+                bundled_test_skill("always", "Always available"),
+                BundledSkillActivation::Always,
+            );
+        });
+
+        let disabled_names = handle.read(&app, |manager, ctx| {
+            manager
+                .get_skills_for_working_directory(None, ctx)
+                .into_iter()
+                .map(|skill| skill.name)
+                .collect::<HashSet<_>>()
+        });
+        assert!(!disabled_names.contains("warpctrl"));
+        assert!(disabled_names.contains("always"));
+
+        drop(warp_control_cli);
+        let warp_control_cli_enabled = FeatureFlag::WarpControlCli.override_enabled(true);
+        let enabled_names = handle.read(&app, |manager, ctx| {
+            manager
+                .get_skills_for_working_directory(None, ctx)
+                .into_iter()
+                .map(|skill| skill.name)
+                .collect::<HashSet<_>>()
+        });
+        assert!(enabled_names.contains("warpctrl"));
+        assert!(enabled_names.contains("always"));
+        drop(warp_control_cli_enabled);
+        drop(bundled_skills_guard);
+    });
+}
+
+#[test]
+fn warp_control_bundled_skill_activations_track_warp_control_feature() {
+    App::test((), |app| async move {
+        let settings = app.add_singleton_model(AISettings::new_with_defaults);
+        let warp_control_cli = FeatureFlag::WarpControlCli.override_enabled(false);
+        let activations = ["warpctrl"]
+            .map(|skill_id| activation_for_bundled_skill(skill_id, Path::new("/resources")));
+        for activation in &activations {
+            assert!(!settings.read(&app, |_, ctx| activation.is_enabled(ctx)));
+        }
+
+        drop(warp_control_cli);
+        let warp_control_cli_enabled = FeatureFlag::WarpControlCli.override_enabled(true);
+        for activation in &activations {
+            assert!(settings.read(&app, |_, ctx| activation.is_enabled(ctx)));
+        }
+        drop(warp_control_cli_enabled);
+    });
+}
+
+#[test]
+fn warp_control_direct_read_respects_warp_control_feature() {
+    let reference = SkillReference::BundledSkillId("warpctrl".to_owned());
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(DirectoryWatcher::new);
+        app.add_singleton_model(AISettings::new_with_defaults);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        app.add_singleton_model(RepoMetadataModel::new);
+        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
+        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
+        let handle = app.add_singleton_model(SkillManager::new);
+        let warp_control_cli = FeatureFlag::WarpControlCli.override_enabled(false);
+
+        handle.update(&mut app, |manager, _| {
+            manager.add_bundled_skill_for_testing(
+                "warpctrl",
+                bundled_test_skill("warpctrl", "Control Warp"),
+                BundledSkillActivation::RequiresFeature(FeatureFlag::WarpControlCli),
+            );
+        });
+
+        assert!(handle.read(&app, |manager, _| manager
+            .skill_by_reference(&reference)
+            .is_some()));
+        assert!(handle.read(&app, |manager, ctx| manager
+            .active_skill_by_reference(&reference, ctx)
+            .is_none()));
+
+        drop(warp_control_cli);
+        let warp_control_cli_enabled = FeatureFlag::WarpControlCli.override_enabled(true);
+        assert!(handle.read(&app, |manager, ctx| manager
+            .active_skill_by_reference(&reference, ctx)
+            .is_some()));
+        drop(warp_control_cli_enabled);
+    });
+}
 #[test]
 fn active_skill_by_reference_resolves_exact_remote_identity() {
     let remote_skill = make_remote_skill(&HostId::new("remote-host".to_string()), "deploy");

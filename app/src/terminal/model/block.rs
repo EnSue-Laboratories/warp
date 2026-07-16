@@ -52,7 +52,9 @@ use crate::terminal::event::{
     BlockWorkingDirectoryUpdatedEvent, Event, UserBlockCompleted,
 };
 use crate::terminal::event_listener::ChannelEventListener;
-use crate::terminal::model::ansi::{self, PrecmdValue, PreexecValue, Processor};
+use crate::terminal::model::ansi::{
+    self, Handler, PrecmdValue, PreexecValue, Processor, PromptMetadata,
+};
 use crate::terminal::model::blockgrid::BlockGrid;
 use crate::terminal::model::grid::grid_handler::TermMode;
 use crate::terminal::model::index::{Point, VisibleRow};
@@ -2930,6 +2932,79 @@ impl Block {
         }
         self.output_grid.clear_marked_text();
     }
+
+    pub(super) fn apply_precmd(&mut self, data: PromptMetadata) {
+        record_trace_event!("command_execution:block:precmd");
+        let is_after_in_band_command = data.was_sent_after_in_band_command();
+        self.header_grid.prompt_only_precmd(data.clone());
+
+        self.state = BlockState::BeforeExecution;
+        self.pwd = data.pwd;
+        self.git_branch.clone_from(&data.git_head);
+        self.git_branch_name.clone_from(&data.git_branch);
+        self.virtual_env = data.virtual_env;
+        self.conda_env = data.conda_env;
+        self.node_version = data.node_version;
+        self.session_id = data.session_id.map(Into::into);
+        self.rprompt.clone_from(&data.rprompt);
+
+        if let Some(rprompt) = data.rprompt {
+            self.init_rprompt_grid(&rprompt);
+        }
+
+        self.precmd_state = PrecmdState::AfterPrecmd;
+        self.event_proxy
+            .send_terminal_event(Event::BlockMetadataReceived(BlockMetadataReceivedEvent {
+                block_metadata: self.metadata(),
+                block_index: self.block_index,
+                is_after_in_band_command,
+                is_done_bootstrapping: matches!(
+                    self.bootstrap_stage,
+                    BootstrapStage::PostBootstrapPrecmd
+                ),
+            }));
+    }
+
+    pub(super) fn apply_preexec(&mut self, data: PreexecValue) {
+        record_trace_event!("command_execution:block:prexec");
+
+        self.ensure_started_for_preexec();
+        self.header_grid.preexec(data.clone());
+
+        let is_for_in_band_command = command_executor::is_in_band_command(data.command.as_str());
+        if self.bootstrap_stage() == BootstrapStage::PostBootstrapPrecmd {
+            self.event_proxy
+                .send_terminal_event(Event::AfterBlockStarted {
+                    block_id: self.id.clone(),
+                    command: self.command_to_string(),
+                    is_for_in_band_command,
+                });
+        }
+
+        self.leading_linefeeds_ignored = 0;
+        self.output_grid.start();
+        self.state = BlockState::Executing;
+        self.is_for_in_band_command = is_for_in_band_command;
+
+        self.wakeup_after_delay();
+    }
+
+    /// Starts the block when `Preexec` is the first observed start evidence.
+    pub(super) fn ensure_started_for_preexec(&mut self) {
+        // This condition is a hack to fix a bug with shells that don't support bracketed paste,
+        // e.g. legacy Bash versions, 4.4 or earlier.
+        // https://lists.gnu.org/archive/html/info-gnu/2016-09/msg00012.html
+        // The bug happens when multi-line commands are submitted, see CORE-1698. Without bracketed
+        // paste, we get multiple blocks per [`crate::terminal::input::Event::ExecuteCommand`]. We
+        // generally assume the code path on ExecuteCommand is responsible for starting the active
+        // block. So, `self.started()` should always be true by this point. However, this assumption
+        // is violated if we get multiple blocks per ExecuteCommand event. So, as a fallback, we
+        // start the block here if it hasn't happened already. Note: the displayed command duration
+        // in the "block label" may be under-estimated in this case.
+        if !self.started() && self.state == BlockState::BeforeExecution {
+            self.start();
+        }
+    }
 }
 
 /// Used in the ansi::Handler implementation for Block below. Performs
@@ -2954,6 +3029,35 @@ macro_rules! delegate {
                 } else {
                     $self.output_grid.$method($( $arg ),*)
                 }
+            }
+        }
+    };
+}
+
+/// Like `delegate!`, but image completions are output, even before preexec.
+macro_rules! delegate_image_completion {
+    ($self:ident.$method:ident( $( $arg:expr ),* )) => {
+        match $self.header_grid.receiving_chars_for_prompt {
+            Some(ansi::PromptKind::Initial) => {
+                $self.header_grid.$method($( $arg ),*)
+            },
+            Some(ansi::PromptKind::Right) => {
+                if !$self.ignore_next_rprompt {
+                    $self.rprompt_grid.$method($( $arg ),*)
+                } else {
+                    Default::default()
+                }
+            },
+            _ if $self.bootstrap_stage == BootstrapStage::WarpInput => Default::default(),
+            _ => {
+                let had_visible_content = $self.output_grid.has_visible_content();
+                let retval = $self.output_grid.$method($( $arg ),*);
+                if !had_visible_content && $self.output_grid.has_visible_content() {
+                    if !$self.output_grid.started() {
+                        $self.output_grid.start();
+                    }
+                }
+                retval
             }
         }
     };
@@ -3297,74 +3401,16 @@ impl ansi::Handler for Block {
             ));
     }
 
-    fn precmd(&mut self, data: PrecmdValue) {
-        record_trace_event!("command_execution:block:precmd");
-        let is_after_in_band_command = data.was_sent_after_in_band_command();
+    fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        self.apply_precmd(data.prompt_metadata);
+    }
 
-        self.header_grid.precmd(data.clone());
-
-        self.state = BlockState::BeforeExecution;
-        self.pwd = data.pwd;
-        self.git_branch.clone_from(&data.git_head);
-        self.git_branch_name.clone_from(&data.git_branch);
-        self.virtual_env = data.virtual_env;
-        self.conda_env = data.conda_env;
-        self.node_version = data.node_version;
-        self.session_id = data.session_id.map(Into::into);
-        self.rprompt.clone_from(&data.rprompt);
-
-        if let Some(rprompt) = data.rprompt {
-            self.init_rprompt_grid(&rprompt);
-        }
-
-        self.precmd_state = PrecmdState::AfterPrecmd;
-        self.event_proxy
-            .send_terminal_event(Event::BlockMetadataReceived(BlockMetadataReceivedEvent {
-                block_metadata: self.metadata(),
-                block_index: self.block_index,
-                is_after_in_band_command,
-                is_done_bootstrapping: matches!(
-                    self.bootstrap_stage,
-                    BootstrapStage::PostBootstrapPrecmd
-                ),
-            }));
+    fn prompt_only_precmd(&mut self, data: PromptMetadata) {
+        self.apply_precmd(data);
     }
 
     fn preexec(&mut self, data: PreexecValue) {
-        record_trace_event!("command_execution:block:prexec");
-
-        // This condition is a hack to fix a bug with shells that don't support bracketed paste,
-        // e.g. legacy Bash versions, 4.4 or earlier.
-        // https://lists.gnu.org/archive/html/info-gnu/2016-09/msg00012.html
-        // The bug happens when multi-line commands are submitted, see CORE-1698. Without bracketed
-        // paste, we get multiple blocks per [`crate::terminal::input::Event::ExecuteCommand`]. We
-        // generally assume the code path on ExecuteCommand is responsible for starting the active
-        // block. So, `self.started()` should always be true by this point. However, this assumption
-        // is violated if we get multiple blocks per ExecuteCommand event. So, as a fallback, we
-        // start the block here if it hasn't happened already. Note: the displayed command duration
-        // in the "block label" may be under-estimated in this case.
-        if !self.started() && self.state == BlockState::BeforeExecution {
-            self.start();
-        }
-
-        self.header_grid.preexec(data.clone());
-
-        let is_for_in_band_command = command_executor::is_in_band_command(data.command.as_str());
-        if self.bootstrap_stage() == BootstrapStage::PostBootstrapPrecmd {
-            self.event_proxy
-                .send_terminal_event(Event::AfterBlockStarted {
-                    block_id: self.id.clone(),
-                    command: self.command_to_string(),
-                    is_for_in_band_command,
-                });
-        }
-
-        self.leading_linefeeds_ignored = 0;
-        self.output_grid.start();
-        self.state = BlockState::Executing;
-        self.is_for_in_band_command = is_for_in_band_command;
-
-        self.wakeup_after_delay();
+        self.apply_preexec(data);
     }
 
     fn on_finish_byte_processing(&mut self, input: &ansi::ProcessorInput<'_>) {
@@ -3376,7 +3422,7 @@ impl ansi::Handler for Block {
     }
 
     fn handle_completed_iterm_image(&mut self, image: ITermImage) {
-        delegate!(self.handle_completed_iterm_image(image))
+        delegate_image_completion!(self.handle_completed_iterm_image(image))
     }
 
     fn handle_completed_kitty_action(
@@ -3384,7 +3430,7 @@ impl ansi::Handler for Block {
         action: KittyAction,
         metadata: &mut HashMap<u32, StoredImageMetadata>,
     ) -> Option<KittyResponse> {
-        delegate!(self.handle_completed_kitty_action(action, metadata))
+        delegate_image_completion!(self.handle_completed_kitty_action(action, metadata))
     }
 
     fn set_keyboard_enhancement_flags(

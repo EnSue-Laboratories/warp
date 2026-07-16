@@ -21,28 +21,26 @@ use futures::io::{BufReader, BufWriter};
 use futures::AsyncReadExt as _;
 use regex::RegexBuilder;
 use warpui::r#async::Timer;
-use warpui::{AppContext, Entity, EntityId, SingletonEntity, ViewHandle};
-
-use crate::terminal::input::{CommandExecutionResult, DenyExecutionReason};
-use crate::terminal::view::TerminalView;
-use warpui::TypedActionView;
-
-use crate::pane_group::tree::Direction as PaneDirection;
-use crate::pane_group::{PaneGroup, PaneGroupAction};
-use crate::terminal::model::terminal_model::TerminalModel;
-use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
-use crate::terminal::shared_session::{
-    join_link, SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionSource,
-};
-use crate::user_config::WarpConfig;
-use crate::workspace::action::WorkspaceAction;
-use crate::workspace::registry::WorkspaceRegistry;
-use crate::workspace::view::Workspace;
+use warpui::{AppContext, Entity, EntityId, SingletonEntity, TypedActionView, ViewHandle};
 use wire::{
     BlockEntry, PaneScreenSnapshot, PaneSnapshot, PaneSnapshotPane, PaneStatus, PaneSummary,
     Request, Response, ShareScrollback, SplitDir, TabSummary, TextMatch, TextMatchSource,
     WaitForTextBlockField, WaitForTextMode, WaitForTextSince,
 };
+
+use crate::pane_group::tree::Direction as PaneDirection;
+use crate::pane_group::{PaneGroup, PaneGroupAction};
+use crate::terminal::input::{CommandExecutionResult, DenyExecutionReason};
+use crate::terminal::model::terminal_model::TerminalModel;
+use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
+use crate::terminal::shared_session::{
+    join_link, SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionSource,
+};
+use crate::terminal::view::TerminalView;
+use crate::user_config::WarpConfig;
+use crate::workspace::action::WorkspaceAction;
+use crate::workspace::registry::WorkspaceRegistry;
+use crate::workspace::view::Workspace;
 
 const SEND_WAIT_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const SEND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
