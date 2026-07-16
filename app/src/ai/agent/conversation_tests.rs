@@ -130,6 +130,7 @@ fn custom_endpoint_usage_metadata(
     let category = "primary_agent".to_string();
     api::response_event::stream_finished::ConversationUsageMetadata {
         context_window_usage: 0.0,
+        total_input_tokens: 0,
         credits_spent: 0.0,
         platform_credits_spent: 0.0,
         summarized: false,
@@ -145,6 +146,7 @@ fn custom_endpoint_usage_metadata(
                 token_usage_by_category: HashMap::from([(category, total_tokens)]),
             },
         )]),
+        context_window_segments: vec![],
     }
 }
 
@@ -364,6 +366,7 @@ fn footer_model_token_usage_keeps_custom_endpoint_usage_distinct_from_same_label
         let category = "primary_agent".to_string();
         let usage_metadata = api::response_event::stream_finished::ConversationUsageMetadata {
             context_window_usage: 0.0,
+            total_input_tokens: 0,
             credits_spent: 0.0,
             platform_credits_spent: 0.0,
             summarized: false,
@@ -387,6 +390,7 @@ fn footer_model_token_usage_keeps_custom_endpoint_usage_distinct_from_same_label
                     token_usage_by_category: HashMap::from([(category.clone(), 6)]),
                 },
             )]),
+            context_window_segments: vec![],
         };
 
         let model_usage =
@@ -427,6 +431,7 @@ fn footer_model_token_usage_preserves_unresolved_custom_endpoint_usage_with_fall
         let category = "primary_agent".to_string();
         let usage_metadata = api::response_event::stream_finished::ConversationUsageMetadata {
             context_window_usage: 0.0,
+            total_input_tokens: 0,
             credits_spent: 0.0,
             platform_credits_spent: 0.0,
             summarized: false,
@@ -443,6 +448,7 @@ fn footer_model_token_usage_preserves_unresolved_custom_endpoint_usage_with_fall
                     token_usage_by_category: HashMap::from([(category.clone(), 9)]),
                 },
             )]),
+            context_window_segments: vec![],
         };
 
         let model_usage =

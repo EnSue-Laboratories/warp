@@ -4,7 +4,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024; // 16 MiB hard cap
 

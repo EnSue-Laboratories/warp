@@ -2,10 +2,7 @@
 //!
 //! These focus on [`CrossWindowTabDrag::collapsed_source_placeholder_index`],
 //! which decides whether the source window's horizontal tab bar collapses the
-//! detached-placeholder slot to zero width. The regression these guard against
-//! is the horizontal "fuzzy shake": collapsing the placeholder while the cursor
-//! is reordering it back in the source window removed the visible drop zone and
-//! made the slot oscillate every frame.
+//! detached-placeholder slot to zero width.
 
 use warpui::geometry::vector::{vec2f, Vector2F};
 use warpui::WindowId;
@@ -58,28 +55,6 @@ fn multi_tab_drag_collapses_only_the_source_window_placeholder() {
     // The preview and unrelated windows never collapse a slot.
     assert_eq!(drag.collapsed_source_placeholder_index(preview), None);
     assert_eq!(drag.collapsed_source_placeholder_index(other), None);
-}
-
-#[test]
-fn source_reorder_keeps_placeholder_full_width() {
-    let source = WindowId::from_usize(1);
-    let preview = WindowId::from_usize(2);
-
-    let mut drag = CrossWindowTabDrag::new();
-    begin_multi_tab_drag(&mut drag, source, preview);
-
-    // Cursor returns to the source's own tab bar: the placeholder is reordered
-    // in place like an in-window drag and must stay full width. Collapsing it
-    // here is what produced the horizontal "fuzzy shake".
-    drag.set_reordering_in_source_for_test(true);
-    assert_eq!(drag.collapsed_source_placeholder_index(source), None);
-
-    // Leaving the source again restores the zero-width collapse.
-    drag.set_reordering_in_source_for_test(false);
-    assert_eq!(
-        drag.collapsed_source_placeholder_index(source),
-        Some(SOURCE_TAB_INDEX)
-    );
 }
 
 #[test]

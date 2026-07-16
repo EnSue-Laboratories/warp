@@ -249,7 +249,14 @@ impl TabData {
             self.tab_group_menu_items(index, tab_groups),
             self.session_sharing_menu_items(index, ctx),
             self.copy_metadata_menu_items(pane_name_target, ctx),
-            self.modify_tab_menu_items(index, can_move_left, can_move_right, pane_name_target, ctx),
+            self.modify_tab_menu_items(
+                index,
+                tabs_len,
+                can_move_left,
+                can_move_right,
+                pane_name_target,
+                ctx,
+            ),
             self.close_tab_menu_items(index, tabs_len, ctx),
             Self::save_config_menu_items(index),
             self.color_option_menu_items(index, terminal_colors),
@@ -456,6 +463,7 @@ impl TabData {
     fn modify_tab_menu_items(
         &self,
         index: usize,
+        tabs_len: usize,
         can_move_left: bool,
         can_move_right: bool,
         pane_name_target: Option<PaneNameMenuTarget>,

@@ -37,9 +37,10 @@ pub enum LocalControlMode {
 }
 
 /// Channel-based default: local control is on for internal dogfood builds and
-/// off for public channels, where users must opt in through Settings > Scripting.
+/// this personal OSS fork. Other public channels still require explicit opt-in
+/// through Settings > Scripting.
 fn default_mode_for_channel(channel: Channel) -> LocalControlMode {
-    if channel.is_dogfood() {
+    if channel.is_dogfood() || matches!(channel, Channel::Oss) {
         LocalControlMode::Enabled
     } else {
         LocalControlMode::Disabled

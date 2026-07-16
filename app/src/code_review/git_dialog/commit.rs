@@ -2,7 +2,8 @@
 //! then on confirm runs `run_commit` and optionally chains `run_push` /
 //! `create_pr` per the selected intent.
 
-use std::{collections::HashSet, path::Path};
+use std::collections::HashSet;
+use std::path::Path;
 
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::appearance::Appearance;

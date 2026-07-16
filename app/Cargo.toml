@@ -662,6 +662,8 @@ default = [
     "tab_configs",
     "grouped_tabs",
     "pinned_tabs",
+    "warp_control_cli",
+    "local_fs",
     "agent_harness",
     "hoa_onboarding_flow",
     "hoa_remote_control",

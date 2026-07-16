@@ -1,11 +1,10 @@
 use clap::Parser;
 
-use crate::{Args, CliCommand, Command};
-
 use super::{
     ControlCommand, PaneCommand, PaneListArgs, PaneSnapshotArgs, SendInputArgs, WaitForTextArgs,
     WaitForTextBlockField, WaitForTextMode, WaitForTextSince,
 };
+use crate::{Args, CliCommand, Command};
 
 fn parse_pane_list<const N: usize>(args: [&str; N]) -> PaneListArgs {
     let args = Args::try_parse_from(args).expect("control pane list should parse");

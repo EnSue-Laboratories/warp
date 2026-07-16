@@ -627,7 +627,7 @@ impl LLMPreferences {
         // Rebuild custom model routers whenever the local `model_configs/` directory
         // changes, and reconcile any now-stale local selection.
         if FeatureFlag::CustomModelRouters.is_enabled() {
-            ctx.subscribe_to_model(&WarpConfig::handle(ctx), |me, _, event, ctx| {
+            ctx.subscribe_to_model(&WarpConfig::handle(ctx), |me, event, ctx| {
                 if matches!(event, WarpConfigUpdateEvent::ModelConfigs) {
                     me.rebuild_custom_model_routers(ctx);
                     me.reconcile_stale_custom_router_selection(ctx);

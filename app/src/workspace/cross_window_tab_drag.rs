@@ -426,18 +426,12 @@ impl CrossWindowTabDrag {
     ///
     /// The placeholder is collapsed only while the dragged tab is actually
     /// away from `window_id` — floating in the dedicated preview window, or
-    /// ghosted / handed off into another window. While the cursor is back
-    /// over this window's own tab bar (`reordering_in_source`) the placeholder
-    /// is the live drag slot, reordered in place exactly like an in-window
-    /// drag, so it must stay full width. Collapsing it there hides the drop
-    /// zone and, because a zero-width slot makes the adjacent-swap thresholds
-    /// in `Workspace::calculate_updated_tab_index` (`left.max_x` vs
-    /// `right.min_x`) overlap, makes the placeholder oscillate every frame —
-    /// the "fuzzy shake". The vertical tabs panel never collapses the
-    /// placeholder, which is why it does not exhibit this.
+    /// ghosted / handed off into another window. This fork immediately hands
+    /// the tab back when it re-enters the source tab bar, so there is no
+    /// separate in-source reorder state to account for here.
     pub fn collapsed_source_placeholder_index(&self, window_id: WindowId) -> Option<usize> {
         let drag = self.active_drag.as_ref()?;
-        if drag.source_window_id != window_id || drag.reordering_in_source {
+        if drag.source_window_id != window_id {
             return None;
         }
         let has_handoff = matches!(drag.phase, DragPhase::InsertedInTarget { .. });
@@ -445,18 +439,6 @@ impl CrossWindowTabDrag {
             self.source_placeholder_tab_index()
         } else {
             None
-        }
-    }
-
-    /// Test-only override of the in-progress drag's `reordering_in_source`
-    /// flag, which is otherwise only set from within `on_drag` once the cursor
-    /// re-enters the source window's tab bar. Lets unit tests exercise
-    /// [`Self::collapsed_source_placeholder_index`] without driving a full
-    /// multi-window drag.
-    #[cfg(test)]
-    pub(crate) fn set_reordering_in_source_for_test(&mut self, reordering_in_source: bool) {
-        if let Some(drag) = self.active_drag.as_mut() {
-            drag.reordering_in_source = reordering_in_source;
         }
     }
 
