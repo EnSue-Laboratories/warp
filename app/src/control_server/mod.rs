@@ -14,11 +14,12 @@ pub mod wire;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use futures::io::{BufReader, BufWriter};
 use futures::AsyncReadExt as _;
+use instant::Instant;
 use regex::RegexBuilder;
 use warpui::r#async::Timer;
 use warpui::{AppContext, Entity, EntityId, SingletonEntity, TypedActionView, ViewHandle};
@@ -304,6 +305,10 @@ fn lookup_terminal_view(wire_pane_id: u64, ctx: &AppContext) -> Option<ViewHandl
     None
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Handlers return the complete wire response on failure"
+)]
 fn resolve_terminal_view(
     pane: Option<u64>,
     ctx: &AppContext,
@@ -555,6 +560,10 @@ struct SubmittedCommand {
     block_id: String,
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Handlers return the complete wire response on failure"
+)]
 fn submit_send_input(
     pane: Option<u64>,
     text: String,
@@ -773,6 +782,10 @@ fn handle_snapshot_pane(
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "Handlers return the complete wire response on failure"
+)]
 fn collect_pane_snapshot(
     pane: Option<u64>,
     blocks: usize,

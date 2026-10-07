@@ -460,10 +460,14 @@ impl FileModel {
 
                         // Only register an individual watcher if not using a repo subscription,
                         // and only record it once it has actually been registered.
-                        if watch_individually && let Some(watch_path) = me.watch_path(file_id) {
-                            me.register_individual_watcher(&watch_path, ctx);
-                            if let Some(FileBackend::Local(file)) = me.file_state.get_mut(file_id) {
-                                file.watcher_type = WatcherType::Individual(watch_path);
+                        if watch_individually {
+                            if let Some(watch_path) = me.watch_path(file_id) {
+                                me.register_individual_watcher(&watch_path, ctx);
+                                if let Some(FileBackend::Local(file)) =
+                                    me.file_state.get_mut(file_id)
+                                {
+                                    file.watcher_type = WatcherType::Individual(watch_path);
+                                }
                             }
                         }
 
@@ -688,9 +692,11 @@ impl FileModel {
                         // Unwatch exactly the directory registered for this file, only when
                         // no other individually-watched file is still using it.
                         WatcherType::Individual(watch_path) => {
-                            let watch_path_still_used = self.file_state.local_values().any(|file| {
-                                file.watcher_type.individual_watch_path() == Some(watch_path.as_path())
-                            });
+                            let watch_path_still_used =
+                                self.file_state.local_values().any(|file| {
+                                    file.watcher_type.individual_watch_path()
+                                        == Some(watch_path.as_path())
+                                });
                             if !watch_path_still_used {
                                 self.watcher.update(ctx, |watcher, _ctx| {
                                     std::mem::drop(watcher.unregister_path(&watch_path));

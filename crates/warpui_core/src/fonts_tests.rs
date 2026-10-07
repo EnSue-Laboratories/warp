@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use pathfinder_geometry::rect::RectI;
-use pathfinder_geometry::vector::{Vector2F, Vector2I, vec2i};
+use pathfinder_geometry::vector::{vec2i, Vector2F, Vector2I};
 
 use super::*;
 use crate::platform::{self, TextLayoutSystem};

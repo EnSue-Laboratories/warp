@@ -694,12 +694,16 @@ impl<T: EventLoopSender> PtyController<T> {
                 });
         }
 
-        if let Some(shell_type) = shell_type_for_split
-            && let Some((kill_buffer, rest)) = split_kill_buffer_write(&bytes_to_write, shell_type)
-        {
-            self.send_message_to_event_loop(Message::Input(Cow::Owned(kill_buffer.to_vec())), ctx);
-            self.send_message_to_event_loop(Message::Input(Cow::Owned(rest.to_vec())), ctx);
-            return true;
+        if let Some(shell_type) = shell_type_for_split {
+            if let Some((kill_buffer, rest)) = split_kill_buffer_write(&bytes_to_write, shell_type)
+            {
+                self.send_message_to_event_loop(
+                    Message::Input(Cow::Owned(kill_buffer.to_vec())),
+                    ctx,
+                );
+                self.send_message_to_event_loop(Message::Input(Cow::Owned(rest.to_vec())), ctx);
+                return true;
+            }
         }
 
         self.send_message_to_event_loop(Message::Input(bytes_to_write), ctx);

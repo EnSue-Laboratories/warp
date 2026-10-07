@@ -247,6 +247,10 @@ enum DragPhase {
     /// focused pane — see [`PaneGroup::absorb_pane_group`]. No view-tree
     /// transfer has occurred yet; the transfer is deferred to drop time, same
     /// as [`DragPhase::GhostInTarget`].
+    #[allow(
+        dead_code,
+        reason = "Retained fork pane-drop support; routing is disabled since the previous upstream sync"
+    )]
     HoveringPaneBody { target_window_id: WindowId },
 }
 
@@ -464,6 +468,10 @@ impl CrossWindowTabDrag {
     /// Returns `true` if a cross-window drag is currently hovering over
     /// `window_id`'s pane-body area (the new tab-as-pane drop target). The
     /// target workspace uses this to render the drop overlay.
+    #[allow(
+        dead_code,
+        reason = "Retained fork pane-drop support; routing is disabled since the previous upstream sync"
+    )]
     pub fn pane_body_hover_for_window(&self, window_id: WindowId) -> bool {
         self.active_drag
             .as_ref()
@@ -2001,6 +2009,10 @@ fn cross_window_attach_target(
 ///
 /// Tab-bar hit-testing runs first in `on_drag_while_floating`; this function
 /// is only consulted when that returned `None`.
+#[allow(
+    dead_code,
+    reason = "Retained fork pane-drop support; routing is disabled since the previous upstream sync"
+)]
 fn cross_window_pane_body_target(
     cursor_position_on_screen: Vector2F,
     preview_window_id: WindowId,

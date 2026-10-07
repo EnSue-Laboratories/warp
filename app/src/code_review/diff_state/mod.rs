@@ -740,6 +740,10 @@ impl DiffStateModel {
     }
 
     /// Runs a commit chain (commit, then optionally push/create-PR).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Mirrors the existing commit-chain action parameters"
+    )]
     pub(crate) fn git_commit_chain(
         &self,
         mode: CommitChainMode,

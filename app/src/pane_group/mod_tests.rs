@@ -3352,10 +3352,11 @@ fn test_undo_close_keeps_a_file_pane_watching_its_file() {
         });
 
         let (file_pane_id, file_view) = pane_group.read(&app, |panes, ctx| {
-            panes
-                .file_notebook_panes(ctx)
-                .next()
-                .expect("the file pane should exist")
+            let pane_id = panes.focused_pane_id(ctx);
+            let pane = panes
+                .downcast_pane_by_id::<FilePane>(pane_id)
+                .expect("the file pane should be focused");
+            (pane_id, pane.file_view(ctx))
         });
 
         // Let the read settle so the pane is fully loaded and watching.

@@ -205,7 +205,7 @@ where
         width: Some(checkbox_size + 2.),
         padding: Some(Default::default()),
         margin: Some(Default::default()),
-        border_color: Some(Fill::Solid(border_color).into()),
+        border_color: Some(Fill::Solid(border_color)),
         border_width: Some(1.),
         border_radius: Some(CornerRadius::with_all(Radius::Pixels(2.))),
         ..Default::default()
@@ -217,7 +217,7 @@ where
     let checked_styles = base_styles.merge(UiComponentStyles {
         background: Some(checked_fill),
         font_color: Some(checked_text),
-        border_color: Some(checked_fill.into()),
+        border_color: Some(checked_fill),
         ..Default::default()
     });
     Checkbox::new(
@@ -4692,9 +4692,7 @@ impl CodeReviewView {
         if !matches!(diff_mode, DiffMode::Head) {
             return None;
         }
-        let Some(repo) = self.active_repo.as_ref() else {
-            return None;
-        };
+        let repo = self.active_repo.as_ref()?;
         let total = state.file_states.len();
         if total == 0 {
             return None;

@@ -4150,11 +4150,9 @@ fn test_closing_tab_context_menu_restores_active_tab_focus() {
         });
         workspace.update(&mut app, |workspace, ctx| {
             assert!(workspace.show_tab_right_click_menu.is_none());
-            assert!(
-                workspace
-                    .active_tab_pane_group()
-                    .is_self_or_child_focused(ctx)
-            );
+            assert!(workspace
+                .active_tab_pane_group()
+                .is_self_or_child_focused(ctx));
         });
     });
 }
@@ -4257,13 +4255,32 @@ fn test_selecting_rename_from_tab_group_context_menu_preserves_editor_focus() {
 
         workspace.read(&app, |workspace, ctx| {
             assert!(workspace.show_tab_group_right_click_menu.is_none());
-            assert!(
-                workspace
-                    .current_workspace_state
-                    .is_any_tab_group_being_renamed()
-            );
+            assert!(workspace
+                .current_workspace_state
+                .is_any_tab_group_being_renamed());
             assert!(workspace.tab_group_rename_editor.is_focused(ctx));
         });
     });
 }
 
+#[test]
+fn test_settings_error_sync_skips_settings_pane_during_update() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let settings_pane = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+
+        // A settings event can reach the workspace while the settings view is already checked
+        // out. Mirroring the error state must not try to update that view recursively.
+        settings_pane.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.sync_settings_error_state_into_settings_pane(ctx);
+            });
+        });
+
+        // Once the view is available, normal syncing must still work.
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.sync_settings_error_state_into_settings_pane(ctx);
+        });
+    });
+}

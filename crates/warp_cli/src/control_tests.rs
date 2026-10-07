@@ -63,8 +63,8 @@ fn pane_list_defaults_to_table_without_preview() {
     let args = parse_pane_list(["warp", "control", "pane", "list"]);
 
     assert_eq!(args.tab, None);
-    assert_eq!(args.preview, false);
-    assert_eq!(args.json, false);
+    assert!(!args.preview);
+    assert!(!args.json);
 }
 
 #[test]
@@ -81,8 +81,8 @@ fn pane_list_accepts_preview_json_and_tab_filter() {
     ]);
 
     assert_eq!(args.tab.as_deref(), Some("77"));
-    assert_eq!(args.preview, true);
-    assert_eq!(args.json, true);
+    assert!(args.preview);
+    assert!(args.json);
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn pane_send_defaults_to_no_wait() {
     let args = parse_pane_send(["warp", "control", "pane", "send", "echo", "hi"]);
 
     assert_eq!(args.pane, None);
-    assert_eq!(args.wait, false);
+    assert!(!args.wait);
     assert_eq!(args.timeout, None);
     assert_eq!(args.command, vec!["echo", "hi"]);
 }
@@ -112,7 +112,7 @@ fn pane_send_accepts_wait_and_timeout() {
     ]);
 
     assert_eq!(args.pane.as_deref(), Some("123"));
-    assert_eq!(args.wait, true);
+    assert!(args.wait);
     assert_eq!(args.timeout, Some(5));
     assert_eq!(args.command, vec!["echo", "hi"]);
 }
@@ -121,7 +121,7 @@ fn pane_send_accepts_wait_and_timeout() {
 fn pane_send_accepts_short_wait_flag() {
     let args = parse_pane_send(["warp", "control", "pane", "send", "-w", "pwd"]);
 
-    assert_eq!(args.wait, true);
+    assert!(args.wait);
     assert_eq!(args.command, vec!["pwd"]);
 }
 
@@ -151,9 +151,9 @@ fn pane_snapshot_defaults_to_screen_json_off_and_five_blocks() {
 
     assert_eq!(args.pane, None);
     assert_eq!(args.blocks, 5);
-    assert_eq!(args.no_screen, false);
+    assert!(!args.no_screen);
     assert_eq!(args.max_output_bytes, 65_536);
-    assert_eq!(args.json, false);
+    assert!(!args.json);
 }
 
 #[test]
@@ -175,9 +175,9 @@ fn pane_snapshot_accepts_json_and_tuning_flags() {
 
     assert_eq!(args.pane.as_deref(), Some("123"));
     assert_eq!(args.blocks, 2);
-    assert_eq!(args.no_screen, true);
+    assert!(args.no_screen);
     assert_eq!(args.max_output_bytes, 99);
-    assert_eq!(args.json, true);
+    assert!(args.json);
 }
 
 #[test]
@@ -185,15 +185,15 @@ fn pane_wait_for_text_defaults_to_both_existing_text() {
     let args = parse_pane_wait_for_text(["warp", "control", "pane", "wait-for-text", "ready"]);
 
     assert_eq!(args.pane, None);
-    assert_eq!(args.regex, false);
+    assert!(!args.regex);
     assert_eq!(args.timeout, 30);
     assert!(matches!(args.mode, WaitForTextMode::Both));
-    assert_eq!(args.case_insensitive, false);
+    assert!(!args.case_insensitive);
     assert!(matches!(args.since, WaitForTextSince::All));
     assert_eq!(args.blocks, 10);
     assert!(matches!(args.block_field, WaitForTextBlockField::Output));
     assert_eq!(args.max_output_bytes, 65_536);
-    assert_eq!(args.json, false);
+    assert!(!args.json);
     assert_eq!(args.text, "ready");
 }
 
@@ -225,14 +225,14 @@ fn pane_wait_for_text_accepts_regex_alias_and_tuning_flags() {
     ]);
 
     assert_eq!(args.pane.as_deref(), Some("123"));
-    assert_eq!(args.regex, true);
+    assert!(args.regex);
     assert_eq!(args.timeout, 7);
     assert!(matches!(args.mode, WaitForTextMode::Screen));
-    assert_eq!(args.case_insensitive, true);
+    assert!(args.case_insensitive);
     assert!(matches!(args.since, WaitForTextSince::Now));
     assert_eq!(args.blocks, 3);
     assert!(matches!(args.block_field, WaitForTextBlockField::Both));
     assert_eq!(args.max_output_bytes, 99);
-    assert_eq!(args.json, true);
+    assert!(args.json);
     assert_eq!(args.text, "READY|DONE");
 }

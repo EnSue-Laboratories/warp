@@ -4193,18 +4193,19 @@ impl AppContext {
                 ..
             } => {
                 // Completion must use the same current window as item delivery.
-                if let Some(current_window_id) = self.view_to_window.get(&view_id).copied()
-                    && let Some(mut view) = self
+                if let Some(current_window_id) = self.view_to_window.get(&view_id).copied() {
+                    if let Some(mut view) = self
                         .windows
                         .get_mut(&current_window_id)
                         .and_then(|w| w.views.remove(&view_id))
-                {
-                    callback(view.as_mut(), self, current_window_id, view_id);
-                    self.windows
-                        .get_mut(&current_window_id)
-                        .expect("Window should exist.")
-                        .views
-                        .insert(view_id, view);
+                    {
+                        callback(view.as_mut(), self, current_window_id, view_id);
+                        self.windows
+                            .get_mut(&current_window_id)
+                            .expect("Window should exist.")
+                            .views
+                            .insert(view_id, view);
+                    }
                 }
             }
             _ => {}

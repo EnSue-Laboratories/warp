@@ -118,7 +118,7 @@ fn truncate_text_preserves_utf8_boundaries_at_the_tail() {
     let (text, truncated) = truncate_text("abcédef".to_string(), 4);
 
     assert_eq!(text, "def");
-    assert_eq!(truncated, true);
+    assert!(truncated);
 }
 
 #[test]
