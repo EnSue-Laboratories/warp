@@ -750,7 +750,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     # Afterwards it's decoded in rust and parsed as usual.
     # Accepts one argument: DCS JSON string
     warp_hex_encode_string () {
-      echo "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
+      printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'
     }
 
     # Returns encoded InitShell hook
@@ -1193,12 +1193,12 @@ esac
             source /etc/bash.bashrc
         fi
 
-        if [[ -e $HOME/.bash_profile ]]; then
-            source $HOME/.bash_profile
-        elif [[ -e $HOME/.bash_login ]]; then
-            source $HOME/.bash_login
-        elif [[ -e $HOME/.profile ]]; then
-            source $HOME/.profile
+        if [[ -e "$HOME/.bash_profile" ]]; then
+            source "$HOME/.bash_profile"
+        elif [[ -e "$HOME/.bash_login" ]]; then
+            source "$HOME/.bash_login"
+        elif [[ -e "$HOME/.profile" ]]; then
+            source "$HOME/.profile"
         fi
 
         rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"

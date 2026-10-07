@@ -27,6 +27,10 @@ use crate::util::git::{self, get_branch_commit_messages, get_diff_for_pr, Commit
 ///
 /// When the chain creates a PR, `ai_client` (when `Some`) generates the
 /// title/body with a `--fill` fallback; pass `None` to skip AI entirely.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Mirrors the existing commit-chain action parameters"
+)]
 pub async fn run_commit_chain(
     repo_path: &Path,
     mode: CommitChainMode,

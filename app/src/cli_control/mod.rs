@@ -352,7 +352,7 @@ fn print_response(response: Response) -> Result<()> {
 }
 
 fn format_duration_ms(ms: u64) -> String {
-    if ms % 1000 == 0 {
+    if ms.is_multiple_of(1000) {
         format!("{}s", ms / 1000)
     } else {
         format!("{ms}ms")
@@ -364,7 +364,7 @@ fn print_tabs(tabs: &[TabSummary]) {
         println!("(no tabs)");
         return;
     }
-    println!("{:<8} {:<6} {:<10} {}", "TAB", "INDEX", "ACTIVE", "PANES");
+    println!("{:<8} {:<6} {:<10} PANES", "TAB", "INDEX", "ACTIVE");
     for t in tabs {
         let active = if t.active { "yes" } else { "" };
         let panes = t
@@ -394,13 +394,13 @@ fn print_panes(panes: &[PaneSummary], include_preview: bool, json: bool) -> Resu
     }
     if include_preview {
         println!(
-            "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} {:<44} {}",
-            "PANE", "TAB", "INDEX", "FOCUSED", "STATUS", "FG", "PREVIEW", "CWD"
+            "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} {:<44} CWD",
+            "PANE", "TAB", "INDEX", "FOCUSED", "STATUS", "FG", "PREVIEW"
         );
     } else {
         println!(
-            "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} {}",
-            "PANE", "TAB", "INDEX", "FOCUSED", "STATUS", "FG", "CWD"
+            "{:<10} {:<8} {:<6} {:<8} {:<9} {:<16} CWD",
+            "PANE", "TAB", "INDEX", "FOCUSED", "STATUS", "FG"
         );
     }
     for p in panes {
@@ -443,7 +443,7 @@ fn print_blocks(blocks: &[BlockEntry]) {
         println!("(no blocks)");
         return;
     }
-    println!("{:<40} {:<10} {:<8} {}", "BLOCK", "PANE", "EXIT", "COMMAND");
+    println!("{:<40} {:<10} {:<8} COMMAND", "BLOCK", "PANE", "EXIT");
     for b in blocks {
         let exit = match b.exit_code {
             Some(c) => c.to_string(),

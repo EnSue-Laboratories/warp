@@ -44,6 +44,7 @@ use crate::cloud_object::model::view::CloudViewModel;
 use crate::context_chips::prompt::Prompt;
 use crate::editor::Event;
 use crate::gpu_state::GPUState;
+use crate::menu::MenuAction;
 use crate::network::NetworkStatus;
 use crate::notebooks::editor::keys::NotebookKeybindings;
 use crate::notebooks::notebook::NotebookView;
@@ -4075,6 +4076,211 @@ fn test_pin_tab_on_grouped_tab_extracts_then_pins() {
             assert_eq!(workspace.tabs[2].pane_group.id(), id2);
             assert!(workspace.tabs[2].group_id.is_none());
             assert!(!workspace.tabs[2].pinned);
+        });
+    });
+}
+
+/// Regression test for #14241.
+///
+/// Creating a tab group opens the inline name editor and also spawns a terminal. About
+/// a second later that terminal's bootstrap block becomes visible and takes focus, which
+/// blurs the editor while the user is still typing. Blur used to be treated as
+/// confirmation, so whatever fragment had been typed became the group's name — and was
+/// persisted.
+///
+/// A rename the user never finished must not be committed.
+#[test]
+fn test_tab_group_rename_blur_does_not_commit_unfinished_name() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            let group_id = workspace.tabs[0]
+                .group_id
+                .expect("active tab should be assigned to the new group");
+            assert_eq!(workspace.tab_groups[&group_id].name, None);
+
+            workspace.rename_tab_group(group_id, ctx);
+
+            // The user gets three characters in before the terminal is ready.
+            workspace
+                .tab_group_rename_editor
+                .update(ctx, |editor, ctx| {
+                    editor.clear_buffer_and_reset_undo_stack(ctx);
+                    editor.user_insert("Bui", ctx);
+                });
+
+            // The auto-created terminal takes focus; the editor blurs with no user intent
+            // to finish.
+            workspace.handle_tab_group_rename_editor_event(&EditorEvent::Blurred, ctx);
+
+            assert_eq!(
+                workspace.tab_groups[&group_id].name, None,
+                "a rename interrupted by the terminal stealing focus must not be committed"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_closing_tab_context_menu_restores_active_tab_focus() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let (window_id, menu) = workspace.update(&mut app, |workspace, ctx| {
+            workspace.toggle_tab_right_click_menu(
+                0,
+                TabContextMenuAnchor::Pointer(Vector2F::zero()),
+                ctx,
+            );
+            (ctx.window_id(), workspace.tab_right_click_menu.clone())
+        });
+        assert_eq!(app.focused_view_id(window_id), Some(menu.id()));
+
+        menu.update(&mut app, |menu, ctx| {
+            menu.handle_action(&MenuAction::Close(false), ctx);
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            assert!(workspace.show_tab_right_click_menu.is_none());
+            assert!(workspace
+                .active_tab_pane_group()
+                .is_self_or_child_focused(ctx));
+        });
+    });
+}
+
+#[test]
+fn test_selecting_rename_from_tab_context_menu_preserves_editor_focus() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let menu = workspace.update(&mut app, |workspace, ctx| {
+            workspace.toggle_tab_right_click_menu(
+                0,
+                TabContextMenuAnchor::Pointer(Vector2F::zero()),
+                ctx,
+            );
+            workspace.tab_right_click_menu.clone()
+        });
+
+        menu.update(&mut app, |menu, ctx| {
+            assert!(menu.set_selected_by_name("Rename tab", ctx));
+            menu.handle_action(&MenuAction::Enter, ctx);
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert!(workspace.show_tab_right_click_menu.is_none());
+            assert_eq!(
+                workspace.current_workspace_state.tab_being_renamed(),
+                Some(0)
+            );
+            assert!(workspace.tab_rename_editor.is_focused(ctx));
+        });
+    });
+}
+
+#[test]
+fn test_selecting_rename_from_pane_context_menu_preserves_editor_focus() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let (menu, locator) = workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group();
+            let locator = PaneViewLocator {
+                pane_group_id: pane_group.id(),
+                pane_id: pane_group.as_ref(ctx).pane_id_from_index(0).unwrap(),
+            };
+            workspace.toggle_vertical_tabs_pane_context_menu(
+                0,
+                VerticalTabsPaneContextMenuTarget::ClickedPane(locator),
+                Vector2F::zero(),
+                ctx,
+            );
+            (workspace.tab_right_click_menu.clone(), locator)
+        });
+
+        menu.update(&mut app, |menu, ctx| {
+            assert!(menu.set_selected_by_name("Rename pane", ctx));
+            menu.handle_action(&MenuAction::Enter, ctx);
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert!(workspace.show_tab_right_click_menu.is_none());
+            assert_eq!(
+                workspace.current_workspace_state.pane_being_renamed(),
+                Some(locator)
+            );
+            assert!(workspace.pane_rename_editor.is_focused(ctx));
+        });
+    });
+}
+
+#[test]
+fn test_selecting_rename_from_tab_group_context_menu_preserves_editor_focus() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let menu = workspace.update(&mut app, |workspace, ctx| {
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+            workspace.toggle_tab_group_right_click_menu(
+                group_id,
+                TabContextMenuAnchor::Pointer(Vector2F::zero()),
+                ctx,
+            );
+            workspace.tab_right_click_menu.clone()
+        });
+
+        menu.update(&mut app, |menu, ctx| {
+            assert!(menu.set_selected_by_name("Rename", ctx));
+            menu.handle_action(&MenuAction::Enter, ctx);
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert!(workspace.show_tab_group_right_click_menu.is_none());
+            assert!(workspace
+                .current_workspace_state
+                .is_any_tab_group_being_renamed());
+            assert!(workspace.tab_group_rename_editor.is_focused(ctx));
+        });
+    });
+}
+
+#[test]
+fn test_settings_error_sync_skips_settings_pane_during_update() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let settings_pane = workspace.read(&app, |workspace, _| workspace.settings_pane.clone());
+
+        // A settings event can reach the workspace while the settings view is already checked
+        // out. Mirroring the error state must not try to update that view recursively.
+        settings_pane.update(&mut app, |_, ctx| {
+            workspace.update(ctx, |workspace, ctx| {
+                workspace.sync_settings_error_state_into_settings_pane(ctx);
+            });
+        });
+
+        // Once the view is available, normal syncing must still work.
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.sync_settings_error_state_into_settings_pane(ctx);
         });
     });
 }
